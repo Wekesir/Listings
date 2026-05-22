@@ -1,0 +1,70 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: realestate-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: realestate
+      MYSQL_USER: realestate_user
+      MYSQL_PASSWORD: realestate_pass
+      MYSQL_ROOT_PASSWORD: root_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./RealEstateBackend
+      dockerfile: Dockerfile
+    container_name: realestate-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      PORT: 5000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: realestate_user
+      DB_PASSWORD: realestate_pass
+      DB_NAME: realestate
+    ports:
+      - "5000:5000"
+
+  frontend:
+    build:
+      context: ./RealEstateFrontend
+      dockerfile: Dockerfile
+    container_name: realestate-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      VITE_PROXY_TARGET: http://backend:5000
+    ports:
+      - "5173:5173"
+
+  phpmyadmin:
+    image: phpmyadmin:5.2-apache
+    container_name: realestate-phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: realestate_user
+      PMA_PASSWORD: realestate_pass
+    ports:
+      - "8080:80"
+
+volumes:
+  mysql_data:

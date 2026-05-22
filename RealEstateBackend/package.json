@@ -1,0 +1,24 @@
+{
+  "name": "realestate-backend",
+  "version": "1.0.0",
+  "description": "Backend API for real estate shortlisting",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "express-session": "^1.19.0",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.15.0",
+    "socket.io": "^4.8.3",
+    "stripe": "^16.12.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}
