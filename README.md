@@ -79,6 +79,24 @@ If OAuth/SMTP values are not set, social buttons or verification email delivery 
 Admin users can now choose the active outbound email provider from `/settings` -> `Email Delivery`.
 For MVP, set provider to `resend` and configure `RESEND_API_KEY` + `RESEND_FROM`.
 
+## Secret Safety (Pre-Commit)
+
+This repo includes a secret scanner at `scripts/check-secrets.sh` and a versioned pre-commit hook at `.githooks/pre-commit`.
+
+To enable the hook locally:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+You can also run the scanner manually anytime:
+
+```bash
+bash scripts/check-secrets.sh
+```
+
+If the scanner blocks your commit, remove the secret from staged files and keep real values only in local `.env` files.
+
 ## Useful Docker Commands
 
 Stop containers:
