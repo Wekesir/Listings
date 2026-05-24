@@ -72,6 +72,76 @@ body {
   transition: background-color 0.25s ease, color 0.25s ease;
 }
 
+/* ── Finance module ── */
+.kr-finance-receipt-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 28px;
+  padding: 0 0.65rem;
+  border-radius: 7px;
+  border: 1.5px solid #2d5a8e;
+  background: transparent;
+  color: #2d5a8e;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.kr-finance-receipt-btn:hover {
+  background: rgba(45, 90, 142, 0.08);
+}
+
+[data-theme="dark"] .kr-finance-receipt-btn {
+  border-color: var(--kr-accent);
+  color: var(--kr-accent);
+}
+
+[data-theme="dark"] .kr-finance-receipt-btn:hover {
+  background: rgba(242, 184, 76, 0.1);
+}
+
+.kr-finance-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1.1rem;
+  border-top: 1px solid var(--kr-border);
+}
+
+.kr-finance-page-info {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--kr-muted);
+}
+
+.kr-finance-amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--kr-text);
+}
+
+.kr-finance-td-listing {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kr-finance-dash {
+  color: var(--kr-muted);
+  font-size: 0.82rem;
+}
+
+.kr-audit-filter-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
 .text-muted,
 .text-secondary {
   color: var(--kr-muted) !important;
@@ -2847,6 +2917,137 @@ a.kr-contact-info-value:hover { color: var(--kr-accent, #f2b84c); }
 }
 
 .kr-auth-submit:hover .kr-submit-arrow { transform: translateX(4px); }
+
+/* ── Social sign-in buttons ── */
+.kr-auth-social-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-bottom: 1.25rem;
+}
+
+.kr-auth-social-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  width: 100%;
+  height: 50px;
+  border-radius: 12px;
+  border: 1.5px solid var(--kr-border);
+  background: var(--kr-card-bg);
+  color: var(--kr-text);
+  font-size: 0.93rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.15s, background 0.15s;
+  position: relative;
+  text-decoration: none;
+}
+
+.kr-auth-social-btn:hover {
+  border-color: color-mix(in srgb, var(--kr-primary-mid) 60%, var(--kr-border));
+  box-shadow: 0 4px 16px rgba(30, 58, 95, 0.1);
+  transform: translateY(-1px);
+}
+
+.kr-auth-social-btn:active { transform: translateY(0); }
+.kr-auth-social-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.kr-auth-social-btn--apple {
+  background: #050505;
+  border-color: #050505;
+  color: #ffffff;
+}
+
+.kr-auth-social-btn--apple:hover {
+  background: #1a1a1a;
+  border-color: #1a1a1a;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .kr-auth-social-btn {
+  background: #1c1c1c;
+  border-color: #333333;
+  color: #f2f2f2;
+}
+
+[data-theme="dark"] .kr-auth-social-btn:hover {
+  border-color: var(--kr-accent);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="dark"] .kr-auth-social-btn--apple {
+  background: #f5f5f5;
+  border-color: #f5f5f5;
+  color: #050505;
+}
+
+[data-theme="dark"] .kr-auth-social-btn--apple:hover {
+  background: #e2e2e2;
+  border-color: #e2e2e2;
+}
+
+/* ── "or" divider ── */
+.kr-auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin: 1.15rem 0;
+}
+
+.kr-auth-divider::before,
+.kr-auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--kr-border);
+}
+
+.kr-auth-divider-text {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.65px;
+  color: var(--kr-muted);
+  white-space: nowrap;
+}
+
+/* ── Mobile topbar back button ── */
+.kr-auth-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 34px;
+  padding: 0 0.85rem;
+  border-radius: 9px;
+  border: 1.5px solid var(--kr-border);
+  background: transparent;
+  color: var(--kr-text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.kr-auth-back-btn:hover {
+  border-color: var(--kr-primary-mid);
+  color: var(--kr-primary-mid);
+  text-decoration: none;
+}
+
+[data-theme="dark"] .kr-auth-back-btn:hover {
+  border-color: var(--kr-accent);
+  color: var(--kr-accent);
+}
 
 .kr-auth-terms {
   font-size: 0.7rem;

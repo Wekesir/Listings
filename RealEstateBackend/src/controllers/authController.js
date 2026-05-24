@@ -1,11 +1,17 @@
 const bcrypt = require("bcryptjs");
 const { pool } = require("../config/db");
+const {
+  issueVerificationCodeForEmail,
+  verifyCodeForEmail
+} = require("../services/auth/emailVerificationService");
+const { getConfiguredDeliveryProvider } = require("../services/auth/emailService");
 
 const publicRegistrationAccountTypes = new Set(["lister", "viewer"]);
 const allowedSubscriptionTiers = new Set(["standard", "premium"]);
 const BCRYPT_ROUNDS = 12;
 const SESSION_IDLE_TIMEOUT_MS = Number(process.env.SESSION_IDLE_TIMEOUT_MS || 30 * 60 * 1000);
 const allowedLogoutReasons = new Set(["manual", "inactivity_timeout", "session_expired", "other"]);
+const APP_FRONTEND_URL = String(process.env.APP_FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
 
 function isBcryptHash(value) {
   return /^\$2[aby]\$\d{2}\$/.test(String(value || ""));
@@ -18,6 +24,8 @@ function buildSessionUser(user) {
     email: user.email,
     accountType: user.account_type || user.accountType,
     subscriptionTier: user.subscription_tier || user.subscriptionTier || "standard",
+    authProvider: user.auth_provider || user.authProvider || "local",
+    emailVerified: Boolean(user.email_verified ?? user.emailVerified ?? true),
     createdAt: user.created_at || user.createdAt,
     isBanned: Boolean(user.is_banned || user.isBanned),
     suspendedUntil: user.suspended_until || user.suspendedUntil || null
@@ -186,6 +194,14 @@ function normalizeReasonText(value, fallback) {
   return normalized || fallback;
 }
 
+function normalizeEmailProvider(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["resend", "smtp", "disabled"].includes(normalized)) {
+    return normalized;
+  }
+  return null;
+}
+
 function getUpperBound(value) {
   return value === null ? Number.POSITIVE_INFINITY : Number(value);
 }
@@ -232,6 +248,8 @@ async function getUserByIdWithRestrictions(userId) {
         email,
         account_type,
         subscription_tier,
+        auth_provider,
+        email_verified,
         created_at,
         is_banned,
         banned_at,
@@ -309,6 +327,168 @@ async function createAuditLog({
   }
 }
 
+function buildFrontendRedirect(pathname, params = {}) {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      searchParams.set(key, String(value));
+    }
+  });
+  const query = searchParams.toString();
+  return `${APP_FRONTEND_URL}${pathname}${query ? `?${query}` : ""}`;
+}
+
+async function createOrLinkOAuthUser(oauthProfile) {
+  const provider = String(oauthProfile?.provider || "").trim().toLowerCase();
+  const providerSubject = String(oauthProfile?.providerSubject || "").trim();
+  const email = String(oauthProfile?.email || "").trim().toLowerCase();
+  const fullName = String(oauthProfile?.fullName || "").trim() || "New User";
+  const emailVerifiedFromProvider = Boolean(oauthProfile?.emailVerified);
+
+  if (!["google", "apple"].includes(provider) || !providerSubject) {
+    return { ok: false, status: 400, message: "Unsupported social provider identity." };
+  }
+  if (!email) {
+    return { ok: false, status: 400, message: "Email was not provided by social provider." };
+  }
+
+  const [providerRows] = await pool.execute(
+    `
+      SELECT
+        id,
+        full_name,
+        email,
+        account_type,
+        subscription_tier,
+        auth_provider,
+        provider_subject,
+        email_verified,
+        created_at,
+        is_banned,
+        banned_at,
+        ban_reason,
+        suspended_until,
+        suspension_reason
+      FROM users
+      WHERE auth_provider = ? AND provider_subject = ?
+      LIMIT 1
+    `,
+    [provider, providerSubject]
+  );
+  if (providerRows.length > 0) {
+    return { ok: true, user: providerRows[0], created: false };
+  }
+
+  const [emailRows] = await pool.execute(
+    `
+      SELECT
+        id,
+        full_name,
+        email,
+        account_type,
+        subscription_tier,
+        auth_provider,
+        provider_subject,
+        email_verified,
+        created_at,
+        is_banned,
+        banned_at,
+        ban_reason,
+        suspended_until,
+        suspension_reason
+      FROM users
+      WHERE email = ?
+      LIMIT 1
+    `,
+    [email]
+  );
+
+  if (emailRows.length > 0) {
+    const existingUser = emailRows[0];
+    await pool.execute(
+      `
+        UPDATE users
+        SET
+          auth_provider = ?,
+          provider_subject = ?,
+          email_verified = CASE
+            WHEN email_verified = 1 THEN 1
+            ELSE ?
+          END
+        WHERE id = ?
+      `,
+      [provider, providerSubject, emailVerifiedFromProvider ? 1 : 0, existingUser.id]
+    );
+    const [updatedRows] = await pool.execute(
+      `
+        SELECT
+          id,
+          full_name,
+          email,
+          account_type,
+          subscription_tier,
+          auth_provider,
+          provider_subject,
+          email_verified,
+          created_at,
+          is_banned,
+          banned_at,
+          ban_reason,
+          suspended_until,
+          suspension_reason
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [existingUser.id]
+    );
+    return { ok: true, user: updatedRows[0], created: false };
+  }
+
+  // Social users default to viewer until they choose to list.
+  const placeholderPassword = await bcrypt.hash(`oauth:${provider}:${providerSubject}`, BCRYPT_ROUNDS);
+  const [insertResult] = await pool.execute(
+    `
+      INSERT INTO users (
+        full_name,
+        email,
+        password,
+        account_type,
+        subscription_tier,
+        auth_provider,
+        provider_subject,
+        email_verified
+      )
+      VALUES (?, ?, ?, 'viewer', 'standard', ?, ?, ?)
+    `,
+    [fullName, email, placeholderPassword, provider, providerSubject, emailVerifiedFromProvider ? 1 : 0]
+  );
+  const [rows] = await pool.execute(
+    `
+      SELECT
+        id,
+        full_name,
+        email,
+        account_type,
+        subscription_tier,
+        auth_provider,
+        provider_subject,
+        email_verified,
+        created_at,
+        is_banned,
+        banned_at,
+        ban_reason,
+        suspended_until,
+        suspension_reason
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [insertResult.insertId]
+  );
+  return { ok: true, user: rows[0], created: true };
+}
+
 const registerUser = async (req, res) => {
   const { fullName, email, password, accountType, subscriptionTier } = req.body || {};
 
@@ -341,6 +521,25 @@ const registerUser = async (req, res) => {
     const normalizedEmail = String(email).trim().toLowerCase();
     const trimmedName = String(fullName).trim();
     const normalizedPassword = String(password);
+
+    if (!trimmedName) {
+      return res.status(400).json({
+        message: "Full name cannot be empty"
+      });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({
+        message: "Please provide a valid email address"
+      });
+    }
+
+    if (normalizedPassword.length < 6) {
+      return res.status(400).json({
+        message: "Password must be at least 6 characters"
+      });
+    }
+
     const hashedPassword = await bcrypt.hash(normalizedPassword, BCRYPT_ROUNDS);
 
     const [existingRows] = await pool.execute(
@@ -356,20 +555,37 @@ const registerUser = async (req, res) => {
 
     const [result] = await pool.execute(
       `
-        INSERT INTO users (full_name, email, password, account_type, subscription_tier)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO users (
+          full_name,
+          email,
+          password,
+          account_type,
+          subscription_tier,
+          auth_provider,
+          email_verified
+        )
+        VALUES (?, ?, ?, ?, ?, 'local', 0)
       `,
       [trimmedName, normalizedEmail, hashedPassword, accountType, normalizedTier]
     );
 
+    const verificationResult = await issueVerificationCodeForEmail(normalizedEmail, { forceSend: true });
+    const verificationMessage = verificationResult.ok
+      ? "We've sent a verification code to your email."
+      : "Account created. Please request a verification code from the verify screen.";
+
     return res.status(201).json({
-      message: "Account created successfully",
+      message: "Account created successfully. Email verification is required before login.",
+      verificationRequired: true,
+      verificationMessage,
       user: {
         id: result.insertId,
         fullName: trimmedName,
         email: normalizedEmail,
         accountType,
         subscriptionTier: normalizedTier,
+        authProvider: "local",
+        emailVerified: false,
         createdAt: new Date().toISOString()
       }
     });
@@ -437,8 +653,16 @@ const createAdminUser = async (req, res) => {
     const hashedPassword = await bcrypt.hash(normalizedPassword, BCRYPT_ROUNDS);
     const [result] = await pool.execute(
       `
-        INSERT INTO users (full_name, email, password, account_type, subscription_tier)
-        VALUES (?, ?, ?, 'admin', 'standard')
+        INSERT INTO users (
+          full_name,
+          email,
+          password,
+          account_type,
+          subscription_tier,
+          auth_provider,
+          email_verified
+        )
+        VALUES (?, ?, ?, 'admin', 'standard', 'local', 1)
       `,
       [trimmedName, normalizedEmail, hashedPassword]
     );
@@ -503,6 +727,8 @@ const loginUser = async (req, res) => {
           password,
           account_type,
           subscription_tier,
+          auth_provider,
+          email_verified,
           created_at,
           is_banned,
           banned_at,
@@ -560,6 +786,23 @@ const loginUser = async (req, res) => {
       });
     }
 
+    if (!Boolean(user.email_verified)) {
+      await createAuditLog({
+        req,
+        email: normalizedEmail,
+        user,
+        eventType: "login_failed",
+        eventReason: "email_not_verified",
+        sessionId: req.sessionID || null,
+        statusCode: 403
+      });
+      return res.status(403).json({
+        message: "Please verify your email before logging in.",
+        verificationRequired: true,
+        email: normalizedEmail
+      });
+    }
+
     const restrictionState = getRestrictionState(user);
     const restrictionMessage = getRestrictionMessage(restrictionState);
     if (restrictionMessage) {
@@ -606,6 +849,152 @@ const loginUser = async (req, res) => {
       message: "Failed to log in"
     });
   }
+};
+
+const verifyEmailCode = async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const code = String(req.body?.code || "").trim();
+  try {
+    const result = await verifyCodeForEmail(email, code);
+    await createAuditLog({
+      req,
+      email: email || null,
+      eventType: result.ok ? "email_verification_success" : "email_verification_failed",
+      eventReason: result.ok ? "code_verified" : "invalid_or_expired_code",
+      sessionId: req.sessionID || null,
+      statusCode: result.status
+    });
+    return res.status(result.status).json({
+      message: result.message,
+      verified: result.ok
+    });
+  } catch (_error) {
+    return res.status(500).json({
+      message: "Failed to verify email code"
+    });
+  }
+};
+
+const resendVerificationCode = async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (!email) {
+    return res.status(400).json({
+      message: "Email is required"
+    });
+  }
+
+  try {
+    const result = await issueVerificationCodeForEmail(email);
+    await createAuditLog({
+      req,
+      email,
+      eventType: result.ok ? "email_verification_sent" : "email_verification_send_failed",
+      eventReason: result.ok ? "resend_requested" : "resend_blocked",
+      sessionId: req.sessionID || null,
+      statusCode: result.status
+    });
+    return res.status(result.status).json({
+      message: result.message,
+      verificationRequired: true
+    });
+  } catch (_error) {
+    return res.status(500).json({
+      message: "Failed to resend verification code"
+    });
+  }
+};
+
+const handleOAuthCallback = async (req, res) => {
+  const providerProfile = req.user;
+  try {
+    if (!providerProfile) {
+      return res.redirect(
+        buildFrontendRedirect("/register", {
+          oauthError: "missing_profile"
+        })
+      );
+    }
+
+    const upsertResult = await createOrLinkOAuthUser(providerProfile);
+    if (!upsertResult.ok || !upsertResult.user) {
+      return res.redirect(
+        buildFrontendRedirect("/register", {
+          oauthError: "account_link_failed"
+        })
+      );
+    }
+
+    const resolvedUser = upsertResult.user;
+    const restrictionState = getRestrictionState(resolvedUser);
+    const restrictionMessage = getRestrictionMessage(restrictionState);
+    if (restrictionMessage) {
+      await createAuditLog({
+        req,
+        user: resolvedUser,
+        email: resolvedUser.email,
+        eventType: "oauth_login_failed",
+        eventReason: restrictionState.isBanned ? "account_banned" : "account_suspended",
+        sessionId: req.sessionID || null,
+        statusCode: 403
+      });
+      return res.redirect(
+        buildFrontendRedirect("/login", {
+          oauthError: "account_restricted"
+        })
+      );
+    }
+
+    if (!Boolean(resolvedUser.email_verified)) {
+      await issueVerificationCodeForEmail(resolvedUser.email);
+      await createAuditLog({
+        req,
+        user: resolvedUser,
+        email: resolvedUser.email,
+        eventType: "oauth_signup_pending_verification",
+        eventReason: "email_verification_required",
+        sessionId: req.sessionID || null,
+        statusCode: 200
+      });
+      return res.redirect(
+        buildFrontendRedirect("/verify-email", {
+          email: resolvedUser.email,
+          source: providerProfile.provider || "social"
+        })
+      );
+    }
+
+    const sessionUser = buildSessionUser(resolvedUser);
+    req.session.user = sessionUser;
+    await createAuditLog({
+      req,
+      user: sessionUser,
+      email: sessionUser.email,
+      eventType: "oauth_login_success",
+      eventReason: `${providerProfile.provider || "social"}_oauth_verified`,
+      sessionId: req.sessionID || null,
+      statusCode: 200
+    });
+    return res.redirect(
+      buildFrontendRedirect("/login", {
+        oauthSuccess: "1"
+      })
+    );
+  } catch (_error) {
+    return res.redirect(
+      buildFrontendRedirect("/register", {
+        oauthError: "callback_failed"
+      })
+    );
+  }
+};
+
+const handleOAuthFailureRedirect = (req, res) => {
+  const provider = String(req.query?.provider || "").trim().toLowerCase();
+  return res.redirect(
+    buildFrontendRedirect("/register", {
+      oauthError: provider ? `${provider}_failed` : "oauth_failed"
+    })
+  );
 };
 
 const updateProfile = async (req, res) => {
@@ -1087,6 +1476,8 @@ const getManageableUsers = async (req, res) => {
           email,
           account_type,
           subscription_tier,
+          auth_provider,
+          email_verified,
           created_at,
           is_banned,
           banned_at,
@@ -1107,6 +1498,8 @@ const getManageableUsers = async (req, res) => {
           email: row.email,
           accountType: row.account_type,
           subscriptionTier: row.subscription_tier,
+          authProvider: row.auth_provider || "local",
+          emailVerified: Boolean(row.email_verified),
           createdAt: row.created_at,
           isBanned: restrictionState.isBanned,
           bannedAt: row.banned_at || null,
@@ -1328,6 +1721,78 @@ const clearUserRestrictions = async (req, res) => {
     return res.status(500).json({
       message: "Failed to update user restrictions"
     });
+  }
+};
+
+const getEmailDeliveryConfiguration = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!sessionUser) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+  if (sessionUser.accountType !== "admin") {
+    return res.status(403).json({ message: "Only admin accounts can view email delivery configuration" });
+  }
+
+  try {
+    const provider = await getConfiguredDeliveryProvider();
+    return res.status(200).json({
+      provider,
+      availableProviders: [
+        { id: "resend", label: "Resend (recommended for MVP)" },
+        { id: "smtp", label: "SMTP (custom mail server)" },
+        { id: "disabled", label: "Disabled (no outbound email)" }
+      ]
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to load email delivery configuration" });
+  }
+};
+
+const updateEmailDeliveryConfiguration = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!sessionUser) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+  if (sessionUser.accountType !== "admin") {
+    return res.status(403).json({ message: "Only admin accounts can update email delivery configuration" });
+  }
+
+  const provider = normalizeEmailProvider(req.body?.provider);
+  if (!provider) {
+    return res.status(400).json({
+      message: "provider must be one of: resend, smtp, disabled"
+    });
+  }
+
+  try {
+    await pool.execute(
+      `
+        INSERT INTO system_settings (setting_key, setting_value)
+        VALUES ('email_delivery_provider', JSON_OBJECT('provider', ?))
+        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+      `,
+      [provider]
+    );
+
+    await createAuditLog({
+      req,
+      user: sessionUser,
+      email: sessionUser.email,
+      eventType: "email_delivery_config_updated",
+      eventReason: "admin_updated_email_provider",
+      sessionId: req.sessionID || null,
+      statusCode: 200,
+      details: {
+        provider
+      }
+    });
+
+    return res.status(200).json({
+      message: `Email delivery provider set to ${provider}.`,
+      provider
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to update email delivery configuration" });
   }
 };
 
@@ -1579,6 +2044,10 @@ module.exports = {
   registerUser,
   createAdminUser,
   loginUser,
+  verifyEmailCode,
+  resendVerificationCode,
+  handleOAuthCallback,
+  handleOAuthFailureRedirect,
   updateProfile,
   getSessionUser,
   logoutUser,
@@ -1589,5 +2058,7 @@ module.exports = {
   getManageableUsers,
   suspendUserAccount,
   banUserAccount,
-  clearUserRestrictions
+  clearUserRestrictions,
+  getEmailDeliveryConfiguration,
+  updateEmailDeliveryConfiguration
 };

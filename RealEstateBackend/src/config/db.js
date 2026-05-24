@@ -88,6 +88,13 @@ async function initializeDatabase() {
       password VARCHAR(255) NOT NULL,
       account_type ENUM('lister', 'viewer', 'admin') NOT NULL,
       subscription_tier ENUM('standard', 'premium') NOT NULL DEFAULT 'standard',
+      auth_provider ENUM('local', 'google', 'apple') NOT NULL DEFAULT 'local',
+      provider_subject VARCHAR(255) NULL,
+      email_verified TINYINT(1) NOT NULL DEFAULT 0,
+      email_verification_code_hash VARCHAR(255) NULL,
+      email_verification_expires_at DATETIME NULL,
+      email_verification_attempts INT NOT NULL DEFAULT 0,
+      last_verification_sent_at DATETIME NULL,
       is_banned TINYINT(1) NOT NULL DEFAULT 0,
       banned_at DATETIME NULL,
       ban_reason VARCHAR(255) NULL,
@@ -216,6 +223,138 @@ async function initializeDatabase() {
     `);
   }
 
+  const [authProviderColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'auth_provider'
+  `);
+  if (Number(authProviderColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN auth_provider ENUM('local', 'google', 'apple') NOT NULL DEFAULT 'local' AFTER subscription_tier
+    `);
+  }
+
+  const [providerSubjectColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'provider_subject'
+  `);
+  if (Number(providerSubjectColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN provider_subject VARCHAR(255) NULL AFTER auth_provider
+    `);
+  }
+
+  const [emailVerifiedColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'email_verified'
+  `);
+  if (Number(emailVerifiedColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN email_verified TINYINT(1) NOT NULL DEFAULT 1 AFTER provider_subject
+    `);
+  }
+
+  const [verificationCodeHashColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'email_verification_code_hash'
+  `);
+  if (Number(verificationCodeHashColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN email_verification_code_hash VARCHAR(255) NULL AFTER email_verified
+    `);
+  }
+
+  const [verificationExpiresAtColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'email_verification_expires_at'
+  `);
+  if (Number(verificationExpiresAtColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN email_verification_expires_at DATETIME NULL AFTER email_verification_code_hash
+    `);
+  }
+
+  const [verificationAttemptsColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'email_verification_attempts'
+  `);
+  if (Number(verificationAttemptsColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN email_verification_attempts INT NOT NULL DEFAULT 0 AFTER email_verification_expires_at
+    `);
+  }
+
+  const [lastVerificationSentAtColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'last_verification_sent_at'
+  `);
+  if (Number(lastVerificationSentAtColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN last_verification_sent_at DATETIME NULL AFTER email_verification_attempts
+    `);
+  }
+
+  await pool.query(`
+    UPDATE users
+    SET email_verified = 1
+    WHERE email_verified IS NULL
+  `);
+
+  const [emailVerifiedIndexRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND INDEX_NAME = 'idx_users_email_verified_created'
+  `);
+  if (Number(emailVerifiedIndexRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      CREATE INDEX idx_users_email_verified_created
+      ON users (email_verified, created_at)
+    `);
+  }
+
+  const [providerIdentityIndexRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND INDEX_NAME = 'idx_users_provider_identity'
+  `);
+  if (Number(providerIdentityIndexRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      CREATE INDEX idx_users_provider_identity
+      ON users (auth_provider, provider_subject)
+    `);
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS auth_audit_logs (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -244,6 +383,71 @@ async function initializeDatabase() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS system_settings (
+      setting_key VARCHAR(100) PRIMARY KEY,
+      setting_value JSON NOT NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+
+  const [emailProviderSettingRows] = await pool.execute(
+    `
+      SELECT setting_key
+      FROM system_settings
+      WHERE setting_key = 'email_delivery_provider'
+      LIMIT 1
+    `
+  );
+  if (!emailProviderSettingRows.length) {
+    await pool.execute(
+      `
+        INSERT INTO system_settings (setting_key, setting_value)
+        VALUES ('email_delivery_provider', JSON_OBJECT('provider', 'resend'))
+      `
+    );
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS properties (
+      id INT PRIMARY KEY,
+      owner_id INT NULL,
+      title VARCHAR(255) NOT NULL,
+      location VARCHAR(255) NOT NULL,
+      type ENUM('rent', 'lease') NOT NULL,
+      price DECIMAL(12, 2) NOT NULL,
+      description TEXT NOT NULL,
+      image_url TEXT NULL,
+      image_urls JSON NULL,
+      video_url TEXT NULL,
+      payment_status ENUM('unpaid', 'pending', 'paid', 'expired') NOT NULL DEFAULT 'unpaid',
+      premium_media_unlocked TINYINT(1) NOT NULL DEFAULT 0,
+      included_image_limit INT NOT NULL DEFAULT 2,
+      listing_status ENUM('draft', 'published') NOT NULL DEFAULT 'published',
+      is_published TINYINT(1) NOT NULL DEFAULT 1,
+      payment_intent ENUM('publish_premium', 'upgrade_premium') NULL,
+      visibility_expires_at DATETIME NULL,
+      is_expired TINYINT(1) NOT NULL DEFAULT 0,
+      expired_at DATETIME NULL,
+      is_soft_deleted TINYINT(1) NOT NULL DEFAULT 0,
+      deleted_at DATETIME NULL,
+      deleted_by_user_id INT NULL,
+      deletion_reason VARCHAR(255) NULL,
+      last_payment_reference VARCHAR(255) NULL,
+      last_payment_provider ENUM('mpesa', 'stripe', 'mock') NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_properties_owner_created (owner_id, created_at),
+      INDEX idx_properties_listing_visibility (listing_status, is_soft_deleted),
+      CONSTRAINT fk_properties_owner
+        FOREIGN KEY (owner_id) REFERENCES users(id)
+        ON DELETE SET NULL,
+      CONSTRAINT fk_properties_deleted_by
+        FOREIGN KEY (deleted_by_user_id) REFERENCES users(id)
+        ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS property_shortlists (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       user_id INT NOT NULL,
@@ -263,11 +467,15 @@ async function initializeDatabase() {
       property_id INT NOT NULL,
       user_id INT NOT NULL,
       amount DECIMAL(10, 2) NOT NULL,
+      amount_kes DECIMAL(12, 2) NULL,
       currency VARCHAR(10) NOT NULL,
       provider ENUM('mpesa', 'stripe', 'mock') NOT NULL,
       status ENUM('pending', 'paid', 'failed', 'cancelled') NOT NULL DEFAULT 'pending',
+      payment_method_label VARCHAR(64) NULL,
       provider_ref VARCHAR(255) NULL,
       checkout_ref VARCHAR(128) NOT NULL,
+      receipt_number VARCHAR(128) NULL,
+      receipt_issued_at DATETIME NULL,
       paid_at DATETIME NULL,
       metadata JSON NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -281,6 +489,175 @@ async function initializeDatabase() {
         ON DELETE CASCADE
     )
   `);
+
+  const [amountKesColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND COLUMN_NAME = 'amount_kes'
+  `);
+  if (Number(amountKesColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE listing_payments
+      ADD COLUMN amount_kes DECIMAL(12, 2) NULL AFTER amount
+    `);
+  }
+
+  const [paymentMethodLabelColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND COLUMN_NAME = 'payment_method_label'
+  `);
+  if (Number(paymentMethodLabelColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE listing_payments
+      ADD COLUMN payment_method_label VARCHAR(64) NULL AFTER status
+    `);
+  }
+
+  const [receiptNumberColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND COLUMN_NAME = 'receipt_number'
+  `);
+  if (Number(receiptNumberColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE listing_payments
+      ADD COLUMN receipt_number VARCHAR(128) NULL AFTER checkout_ref
+    `);
+  }
+
+  const [receiptIssuedAtColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND COLUMN_NAME = 'receipt_issued_at'
+  `);
+  if (Number(receiptIssuedAtColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE listing_payments
+      ADD COLUMN receipt_issued_at DATETIME NULL AFTER receipt_number
+    `);
+  }
+
+  const [statusPaidAtIndexRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND INDEX_NAME = 'idx_listing_payments_status_paid_at'
+  `);
+  if (Number(statusPaidAtIndexRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      CREATE INDEX idx_listing_payments_status_paid_at
+      ON listing_payments (status, paid_at)
+    `);
+  }
+
+  const [userStatusPaidAtIndexRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND INDEX_NAME = 'idx_listing_payments_user_status_paid_at'
+  `);
+  if (Number(userStatusPaidAtIndexRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      CREATE INDEX idx_listing_payments_user_status_paid_at
+      ON listing_payments (user_id, status, paid_at)
+    `);
+  }
+
+  const [providerPaidAtIndexRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND INDEX_NAME = 'idx_listing_payments_provider_paid_at'
+  `);
+  if (Number(providerPaidAtIndexRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      CREATE INDEX idx_listing_payments_provider_paid_at
+      ON listing_payments (provider, paid_at)
+    `);
+  }
+
+  const [receiptNumberIndexRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND INDEX_NAME = 'uniq_listing_payments_receipt_number'
+  `);
+  if (Number(receiptNumberIndexRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      CREATE UNIQUE INDEX uniq_listing_payments_receipt_number
+      ON listing_payments (receipt_number)
+    `);
+  }
+
+  await pool.query(`
+    INSERT INTO properties (
+      id,
+      owner_id,
+      title,
+      location,
+      type,
+      price,
+      description,
+      image_url,
+      image_urls,
+      payment_status,
+      premium_media_unlocked,
+      included_image_limit,
+      listing_status,
+      is_published,
+      payment_intent
+    )
+    SELECT
+      lp.property_id,
+      NULL,
+      CONCAT('Legacy Property #', lp.property_id),
+      'Unknown',
+      'rent',
+      0,
+      'Backfilled placeholder listing created to preserve payment foreign-key integrity.',
+      NULL,
+      JSON_ARRAY(),
+      'paid',
+      1,
+      2,
+      'published',
+      1,
+      'upgrade_premium'
+    FROM listing_payments lp
+    LEFT JOIN properties p ON p.id = lp.property_id
+    WHERE p.id IS NULL
+      AND lp.property_id IS NOT NULL
+  `);
+
+  const [paymentPropertyFkRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'listing_payments'
+      AND CONSTRAINT_NAME = 'fk_listing_payments_property'
+      AND COLUMN_NAME = 'property_id'
+  `);
+  if (Number(paymentPropertyFkRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE listing_payments
+      ADD CONSTRAINT fk_listing_payments_property
+        FOREIGN KEY (property_id) REFERENCES properties(id)
+        ON DELETE CASCADE
+    `);
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS listing_pricing_rules (
@@ -542,8 +919,17 @@ async function initializeDatabase() {
         const hashedPassword = await bcrypt.hash(SEEDED_ADMIN.password, BCRYPT_ROUNDS);
         await pool.execute(
           `
-            INSERT INTO users (full_name, email, phone, password, account_type, subscription_tier)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO users (
+              full_name,
+              email,
+              phone,
+              password,
+              account_type,
+              subscription_tier,
+              auth_provider,
+              email_verified
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'local', 1)
           `,
           [
             SEEDED_ADMIN.fullName,
@@ -574,8 +960,17 @@ async function initializeDatabase() {
         const hashedPassword = await bcrypt.hash(SEEDED_DEMO_LISTER.password, BCRYPT_ROUNDS);
         await pool.execute(
           `
-            INSERT INTO users (full_name, email, phone, password, account_type, subscription_tier)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO users (
+              full_name,
+              email,
+              phone,
+              password,
+              account_type,
+              subscription_tier,
+              auth_provider,
+              email_verified
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'local', 1)
           `,
           [
             SEEDED_DEMO_LISTER.fullName,
@@ -625,9 +1020,126 @@ async function syncDemoListingOwners(properties) {
   }
 }
 
+function toDbDateTimeOrNull(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const year = parsed.getUTCFullYear();
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getUTCDate()).padStart(2, "0");
+  const hours = String(parsed.getUTCHours()).padStart(2, "0");
+  const minutes = String(parsed.getUTCMinutes()).padStart(2, "0");
+  const seconds = String(parsed.getUTCSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+async function syncPropertiesTable(properties) {
+  if (!Array.isArray(properties) || properties.length === 0) {
+    return;
+  }
+
+  const placeholders = properties.filter((item) => Number.isFinite(Number(item?.id)) && Number(item.id) > 0);
+  for (const item of placeholders) {
+    const imageUrls = Array.isArray(item.imageUrls) ? item.imageUrls : (item.imageUrl ? [item.imageUrl] : []);
+    await pool.execute(
+      `
+        INSERT INTO properties (
+          id,
+          owner_id,
+          title,
+          location,
+          type,
+          price,
+          description,
+          image_url,
+          image_urls,
+          video_url,
+          payment_status,
+          premium_media_unlocked,
+          included_image_limit,
+          listing_status,
+          is_published,
+          payment_intent,
+          visibility_expires_at,
+          is_expired,
+          expired_at,
+          is_soft_deleted,
+          deleted_at,
+          deleted_by_user_id,
+          deletion_reason,
+          last_payment_reference,
+          last_payment_provider
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          owner_id = VALUES(owner_id),
+          title = VALUES(title),
+          location = VALUES(location),
+          type = VALUES(type),
+          price = VALUES(price),
+          description = VALUES(description),
+          image_url = VALUES(image_url),
+          image_urls = VALUES(image_urls),
+          video_url = VALUES(video_url),
+          payment_status = VALUES(payment_status),
+          premium_media_unlocked = VALUES(premium_media_unlocked),
+          included_image_limit = VALUES(included_image_limit),
+          listing_status = VALUES(listing_status),
+          is_published = VALUES(is_published),
+          payment_intent = VALUES(payment_intent),
+          visibility_expires_at = VALUES(visibility_expires_at),
+          is_expired = VALUES(is_expired),
+          expired_at = VALUES(expired_at),
+          is_soft_deleted = VALUES(is_soft_deleted),
+          deleted_at = VALUES(deleted_at),
+          deleted_by_user_id = VALUES(deleted_by_user_id),
+          deletion_reason = VALUES(deletion_reason),
+          last_payment_reference = VALUES(last_payment_reference),
+          last_payment_provider = VALUES(last_payment_provider)
+      `,
+      [
+        Number(item.id),
+        Number.isFinite(Number(item.ownerId)) ? Number(item.ownerId) : null,
+        String(item.title || `Property ${item.id}`),
+        String(item.location || "Unknown"),
+        ["rent", "lease"].includes(String(item.type || "").toLowerCase()) ? String(item.type).toLowerCase() : "rent",
+        Number.isFinite(Number(item.price)) ? Number(item.price) : 0,
+        String(item.description || ""),
+        String(item.imageUrl || imageUrls[0] || ""),
+        JSON.stringify(imageUrls),
+        item.videoUrl ? String(item.videoUrl) : null,
+        ["unpaid", "pending", "paid", "expired"].includes(String(item.paymentStatus || "").toLowerCase())
+          ? String(item.paymentStatus).toLowerCase()
+          : "unpaid",
+        item.premiumMediaUnlocked ? 1 : 0,
+        Number.isFinite(Number(item.includedImageLimit)) ? Number(item.includedImageLimit) : 2,
+        ["draft", "published"].includes(String(item.listingStatus || "").toLowerCase())
+          ? String(item.listingStatus).toLowerCase()
+          : "published",
+        item.isPublished === false ? 0 : 1,
+        ["publish_premium", "upgrade_premium"].includes(String(item.paymentIntent || "").toLowerCase())
+          ? String(item.paymentIntent).toLowerCase()
+          : null,
+        toDbDateTimeOrNull(item.visibilityExpiresAt),
+        item.isExpired ? 1 : 0,
+        toDbDateTimeOrNull(item.expiredAt),
+        item.isSoftDeleted ? 1 : 0,
+        toDbDateTimeOrNull(item.deletedAt),
+        Number.isFinite(Number(item.deletedByUserId)) ? Number(item.deletedByUserId) : null,
+        item.deletionReason ? String(item.deletionReason) : null,
+        item.lastPaymentReference ? String(item.lastPaymentReference) : null,
+        ["mpesa", "stripe", "mock"].includes(String(item.lastPaymentProvider || "").toLowerCase())
+          ? String(item.lastPaymentProvider).toLowerCase()
+          : null
+      ]
+    );
+  }
+}
+
 module.exports = {
   pool,
   waitForDatabase,
   initializeDatabase,
-  syncDemoListingOwners
+  syncDemoListingOwners,
+  syncPropertiesTable
 };

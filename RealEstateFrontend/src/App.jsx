@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import HomePage from "./pages/HomePage";
 import RegisterPage from "./pages/RegisterPage";
 import LoginPage from "./pages/LoginPage";
+import VerifyEmailPage from "./pages/VerifyEmailPage";
 import ListingsPage from "./pages/ListingsPage";
 import BrowseListingsPage from "./pages/BrowseListingsPage";
 import ShortlistPage from "./pages/ShortlistPage";
@@ -17,6 +18,8 @@ import AdminPricingPage from "./pages/AdminPricingPage";
 import AdminListingReportsPage from "./pages/AdminListingReportsPage";
 import MessagesPage from "./pages/MessagesPage";
 import AdminMessagesPage from "./pages/AdminMessagesPage";
+import ListerFinancesPage from "./pages/ListerFinancesPage";
+import AdminFinancesPage from "./pages/AdminFinancesPage";
 import { getStoredTheme, getStoredUser } from "./utils/session";
 import SessionTimeoutManager from "./components/SessionTimeoutManager";
 import CookieNotice from "./components/CookieNotice";
@@ -58,6 +61,7 @@ function App() {
         <Route path="/browse" element={<BrowseListingsPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
         <Route
           path="/listings"
           element={(
@@ -84,6 +88,14 @@ function App() {
           )}
         />
         <Route
+          path="/finances"
+          element={(
+            <ProtectedRoute allowedRoles={["lister", "admin"]}>
+              <ListerFinancesPage />
+            </ProtectedRoute>
+          )}
+        />
+        <Route
           path="/messages"
           element={(
             <ProtectedRoute allowedRoles={["viewer", "lister", "admin"]}>
@@ -96,6 +108,14 @@ function App() {
           element={(
             <ProtectedRoute allowedRoles={["viewer", "lister", "admin"]}>
               <SettingsPage />
+            </ProtectedRoute>
+          )}
+        />
+        <Route
+          path="/admin/finances"
+          element={(
+            <ProtectedRoute allowedRoles={["admin"]}>
+              <AdminFinancesPage />
             </ProtectedRoute>
           )}
         />

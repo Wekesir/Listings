@@ -1,6 +1,6 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { loginAccount } from "../services/authService";
+import { getActiveSession, loginAccount } from "../services/authService";
 import { setStoredSessionMeta, setStoredUser } from "../utils/session";
 import { notify } from "../utils/notify";
 
@@ -12,14 +12,14 @@ function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showSessionExpiredNotice, setShowSessionExpiredNotice] = useState(false);
   const [showAccountRestrictedNotice, setShowAccountRestrictedNotice] = useState(false);
+  const [showVerifiedNotice, setShowVerifiedNotice] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const sessionExpired = params.get("sessionExpired") === "1";
     const accountRestricted = params.get("accountRestricted") === "1";
-    if (!sessionExpired && !accountRestricted) {
-      return;
-    }
+    const verified = params.get("verified") === "1";
+    const oauthSuccess = params.get("oauthSuccess") === "1";
 
     if (sessionExpired) {
       setShowSessionExpiredNotice(true);
@@ -27,8 +27,34 @@ function LoginPage() {
     if (accountRestricted) {
       setShowAccountRestrictedNotice(true);
     }
+    if (verified) {
+      setShowVerifiedNotice(true);
+    }
+    if (oauthSuccess) {
+      getActiveSession()
+        .then((response) => {
+          setStoredUser(response.user);
+          setStoredSessionMeta({
+            timeoutMs: Number(response?.session?.timeoutMs),
+            lastActivityAt: Date.now()
+          });
+          notify("Signed in successfully with social account.", "success");
+          const fallbackPath =
+            ["lister", "admin"].includes(response.user?.accountType) ? "/dashboard" : "/listings";
+          navigate(fallbackPath, { replace: true });
+        })
+        .catch(() => {
+          notify("Social login did not complete. Please try again.", "warning");
+        });
+    }
+    if (!sessionExpired && !accountRestricted && !verified && !oauthSuccess) {
+      return;
+    }
+
     params.delete("sessionExpired");
     params.delete("accountRestricted");
+    params.delete("verified");
+    params.delete("oauthSuccess");
     const nextSearch = params.toString();
     navigate(
       {
@@ -68,6 +94,9 @@ function LoginPage() {
         (["lister", "admin"].includes(response.user?.accountType) ? "/dashboard" : "/listings");
       setTimeout(() => navigate(redirectPath, { replace: true }), 600);
     } catch (submitError) {
+      if (submitError?.message?.toLowerCase().includes("verify your email")) {
+        navigate(`/verify-email?email=${encodeURIComponent(formState.email)}`);
+      }
       notify(submitError.message || "Failed to log in.", "danger");
     } finally {
       setIsSubmitting(false);
@@ -164,6 +193,11 @@ function LoginPage() {
             {showAccountRestrictedNotice && (
               <div className="alert alert-danger py-2 px-3 mb-3" role="alert">
                 Your account has been restricted by an administrator. Contact support for assistance.
+              </div>
+            )}
+            {showVerifiedNotice && (
+              <div className="alert alert-success py-2 px-3 mb-3" role="alert">
+                Email verified. You can now log in.
               </div>
             )}
 

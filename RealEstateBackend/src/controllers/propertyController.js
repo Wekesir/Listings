@@ -30,6 +30,122 @@ const LISTING_PAYMENT_INTENT = {
   UPGRADE_PREMIUM: "upgrade_premium"
 };
 
+function toDbDateTimeOrNull(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const year = parsed.getUTCFullYear();
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getUTCDate()).padStart(2, "0");
+  const hours = String(parsed.getUTCHours()).padStart(2, "0");
+  const minutes = String(parsed.getUTCMinutes()).padStart(2, "0");
+  const seconds = String(parsed.getUTCSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+async function syncPropertyToDatabase(property) {
+  if (!property || !Number.isFinite(Number(property.id)) || Number(property.id) <= 0) {
+    return;
+  }
+  const imageUrls = Array.isArray(property.imageUrls)
+    ? property.imageUrls
+    : (property.imageUrl ? [property.imageUrl] : []);
+  await pool.execute(
+    `
+      INSERT INTO properties (
+        id,
+        owner_id,
+        title,
+        location,
+        type,
+        price,
+        description,
+        image_url,
+        image_urls,
+        video_url,
+        payment_status,
+        premium_media_unlocked,
+        included_image_limit,
+        listing_status,
+        is_published,
+        payment_intent,
+        visibility_expires_at,
+        is_expired,
+        expired_at,
+        is_soft_deleted,
+        deleted_at,
+        deleted_by_user_id,
+        deletion_reason,
+        last_payment_reference,
+        last_payment_provider
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        owner_id = VALUES(owner_id),
+        title = VALUES(title),
+        location = VALUES(location),
+        type = VALUES(type),
+        price = VALUES(price),
+        description = VALUES(description),
+        image_url = VALUES(image_url),
+        image_urls = VALUES(image_urls),
+        video_url = VALUES(video_url),
+        payment_status = VALUES(payment_status),
+        premium_media_unlocked = VALUES(premium_media_unlocked),
+        included_image_limit = VALUES(included_image_limit),
+        listing_status = VALUES(listing_status),
+        is_published = VALUES(is_published),
+        payment_intent = VALUES(payment_intent),
+        visibility_expires_at = VALUES(visibility_expires_at),
+        is_expired = VALUES(is_expired),
+        expired_at = VALUES(expired_at),
+        is_soft_deleted = VALUES(is_soft_deleted),
+        deleted_at = VALUES(deleted_at),
+        deleted_by_user_id = VALUES(deleted_by_user_id),
+        deletion_reason = VALUES(deletion_reason),
+        last_payment_reference = VALUES(last_payment_reference),
+        last_payment_provider = VALUES(last_payment_provider)
+    `,
+    [
+      Number(property.id),
+      Number.isFinite(Number(property.ownerId)) ? Number(property.ownerId) : null,
+      String(property.title || `Property ${property.id}`),
+      String(property.location || "Unknown"),
+      ["rent", "lease"].includes(String(property.type || "").toLowerCase())
+        ? String(property.type).toLowerCase()
+        : "rent",
+      Number.isFinite(Number(property.price)) ? Number(property.price) : 0,
+      String(property.description || ""),
+      String(property.imageUrl || imageUrls[0] || ""),
+      JSON.stringify(imageUrls),
+      property.videoUrl ? String(property.videoUrl) : null,
+      ["unpaid", "pending", "paid", "expired"].includes(String(property.paymentStatus || "").toLowerCase())
+        ? String(property.paymentStatus).toLowerCase()
+        : "unpaid",
+      property.premiumMediaUnlocked ? 1 : 0,
+      Number.isFinite(Number(property.includedImageLimit)) ? Number(property.includedImageLimit) : BASIC_INCLUDED_IMAGE_LIMIT,
+      ["draft", "published"].includes(String(property.listingStatus || "").toLowerCase())
+        ? String(property.listingStatus).toLowerCase()
+        : "published",
+      property.isPublished === false ? 0 : 1,
+      ["publish_premium", "upgrade_premium"].includes(String(property.paymentIntent || "").toLowerCase())
+        ? String(property.paymentIntent).toLowerCase()
+        : null,
+      toDbDateTimeOrNull(property.visibilityExpiresAt),
+      property.isExpired ? 1 : 0,
+      toDbDateTimeOrNull(property.expiredAt),
+      property.isSoftDeleted ? 1 : 0,
+      toDbDateTimeOrNull(property.deletedAt),
+      Number.isFinite(Number(property.deletedByUserId)) ? Number(property.deletedByUserId) : null,
+      property.deletionReason ? String(property.deletionReason) : null,
+      property.lastPaymentReference ? String(property.lastPaymentReference) : null,
+      ["mpesa", "stripe", "mock"].includes(String(property.lastPaymentProvider || "").toLowerCase())
+        ? String(property.lastPaymentProvider).toLowerCase()
+        : null
+    ]
+  );
+}
+
 function normalizePaymentIntent(rawIntent) {
   const normalized = String(rawIntent || "").trim().toLowerCase();
   if (normalized === LISTING_PAYMENT_INTENT.PUBLISH_PREMIUM) {
@@ -580,6 +696,7 @@ const createProperty = async (req, res) => {
   };
 
   properties.push(createdProperty);
+  await syncPropertyToDatabase(createdProperty);
 
   return res.status(201).json({
     message: wantsPrePublishPremium
@@ -626,11 +743,15 @@ async function getLatestListingPayment(propertyId) {
         property_id AS propertyId,
         user_id AS userId,
         amount,
+        amount_kes AS amountKes,
         currency,
         provider,
         status,
+        payment_method_label AS paymentMethodLabel,
         provider_ref AS providerRef,
         checkout_ref AS checkoutRef,
+        receipt_number AS receiptNumber,
+        receipt_issued_at AS receiptIssuedAt,
         paid_at AS paidAt,
         metadata,
         created_at AS createdAt,
@@ -652,11 +773,14 @@ async function markListingPaid({ property, providerRef, checkoutRef, provider, m
       SET
         status = 'paid',
         provider_ref = COALESCE(?, provider_ref),
+        payment_method_label = COALESCE(payment_method_label, ?),
+        receipt_number = COALESCE(receipt_number, CONCAT('KRE-', DATE_FORMAT(CURRENT_TIMESTAMP, '%Y%m%d'), '-', LPAD(id, 8, '0'))),
+        receipt_issued_at = COALESCE(receipt_issued_at, CURRENT_TIMESTAMP),
         paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP),
         metadata = COALESCE(?, metadata)
       WHERE checkout_ref = ?
     `,
-    [providerRef || null, metadata ? JSON.stringify(metadata) : null, checkoutRef]
+    [providerRef || null, provider || null, metadata ? JSON.stringify(metadata) : null, checkoutRef]
   );
   const paymentIntent = normalizePaymentIntent(metadata?.paymentIntent);
   const months = parseMonths(metadata?.pricingQuote?.months ?? metadata?.months, 1);
@@ -668,6 +792,7 @@ async function markListingPaid({ property, providerRef, checkoutRef, provider, m
     property.lastPaymentReference = providerRef;
   }
   property.lastPaymentProvider = provider || property.lastPaymentProvider || null;
+  await syncPropertyToDatabase(property);
 }
 
 async function applySuccessfulPaymentByReference({ checkoutRef, providerRef, provider, metadata = null }) {
@@ -865,22 +990,26 @@ const createListingPaymentCheckout = async (req, res) => {
         property_id,
         user_id,
         amount,
+        amount_kes,
         currency,
         provider,
         status,
+        payment_method_label,
         provider_ref,
         checkout_ref,
         metadata
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       propertyId,
       owner.id,
       amountUsd,
+      Number.isFinite(Number(pricingQuote.totalKes)) ? Number(pricingQuote.totalKes) : null,
       "USD",
       effectiveProvider,
       paymentStatus,
+      effectiveProvider,
       providerResult.providerRef || null,
       providerResult.checkoutRef || checkoutRef,
       JSON.stringify({
@@ -898,6 +1027,7 @@ const createListingPaymentCheckout = async (req, res) => {
   } else {
     property.paymentStatus = PAYMENT_STATUS.PENDING;
   }
+  await syncPropertyToDatabase(property);
 
   return res.status(200).json({
     message: paymentStatus === "paid"
@@ -1008,6 +1138,8 @@ const updateProperty = async (req, res) => {
     }
     property.videoUrl = buildUploadedFileUrl(req, uploadedVideo);
   }
+
+  await syncPropertyToDatabase(property);
 
   return res.status(200).json({
     message: "Listing updated successfully",
@@ -1142,6 +1274,7 @@ const softDeleteProperty = (req, res) => {
   property.deletedAt = new Date().toISOString();
   property.deletedByUserId = Number(sessionUser.id) || null;
   property.deletionReason = reason;
+  void syncPropertyToDatabase(property);
 
   return res.status(200).json({
     message: "Listing soft deleted successfully",
@@ -1166,6 +1299,7 @@ function applySoftDeleteFromModeration(propertyId, adminUserId, reason) {
   property.deletedAt = new Date().toISOString();
   property.deletedByUserId = Number(adminUserId) > 0 ? Number(adminUserId) : null;
   property.deletionReason = normalizedReason;
+  void syncPropertyToDatabase(property);
   return { ok: true, alreadyApplied: false, property };
 }
 
@@ -1191,6 +1325,7 @@ const restoreSoftDeletedProperty = (req, res) => {
   property.deletedAt = null;
   property.deletedByUserId = null;
   property.deletionReason = null;
+  void syncPropertyToDatabase(property);
 
   return res.status(200).json({
     message: "Listing restored successfully",

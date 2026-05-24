@@ -2,7 +2,12 @@ require("dotenv").config();
 const app = require("./app");
 const http = require("http");
 const properties = require("./data/properties");
-const { waitForDatabase, initializeDatabase, syncDemoListingOwners } = require("./config/db");
+const {
+  waitForDatabase,
+  initializeDatabase,
+  syncDemoListingOwners,
+  syncPropertiesTable
+} = require("./config/db");
 const { initRealtime } = require("./realtime/socket");
 
 const PORT = process.env.PORT || 5000;
@@ -12,6 +17,7 @@ async function startServer() {
     await waitForDatabase();
     await initializeDatabase();
     await syncDemoListingOwners(properties);
+    await syncPropertiesTable(properties);
 
     const server = http.createServer(app);
     initRealtime(server, app.sessionMiddleware);

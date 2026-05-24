@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import PortalLayout from "../components/PortalLayout";
-import { updateAccountProfile } from "../services/authService";
+import {
+  getEmailDeliveryConfiguration,
+  updateAccountProfile,
+  updateEmailDeliveryConfiguration
+} from "../services/authService";
 import { notify } from "../utils/notify";
 import { getStoredTheme, getStoredUser, setStoredTheme, setStoredUser } from "../utils/session";
 import { getStoredPreferences, setStoredPreferences } from "../utils/userPreferences";
@@ -36,6 +40,11 @@ function SettingsPage() {
     email: getStoredUser()?.email || ""
   }));
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [emailDeliveryProvider, setEmailDeliveryProvider] = useState("resend");
+  const [emailDeliveryOptions, setEmailDeliveryOptions] = useState([]);
+  const [isLoadingEmailDelivery, setIsLoadingEmailDelivery] = useState(false);
+  const [isSavingEmailDelivery, setIsSavingEmailDelivery] = useState(false);
+  const isAdmin = user?.accountType === "admin";
 
   const initials = (() => {
     const parts = (user?.fullName || "U").split(" ");
@@ -48,6 +57,29 @@ function SettingsPage() {
     document.documentElement.setAttribute("data-theme", theme);
     setStoredTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      return;
+    }
+
+    const loadEmailDeliveryConfig = async () => {
+      setIsLoadingEmailDelivery(true);
+      try {
+        const response = await getEmailDeliveryConfiguration();
+        setEmailDeliveryProvider(response?.provider || "resend");
+        setEmailDeliveryOptions(
+          Array.isArray(response?.availableProviders) ? response.availableProviders : []
+        );
+      } catch (error) {
+        notify(error.message || "Could not load email delivery settings.", "danger");
+      } finally {
+        setIsLoadingEmailDelivery(false);
+      }
+    };
+
+    loadEmailDeliveryConfig();
+  }, [isAdmin]);
 
   const handlePreferenceChange = (event) => {
     const { name, checked } = event.target;
@@ -104,6 +136,24 @@ function SettingsPage() {
     }
   };
 
+  const handleSaveEmailDeliveryProvider = async () => {
+    if (!isAdmin) {
+      notify("Only admin users can update email delivery settings.", "warning");
+      return;
+    }
+    setIsSavingEmailDelivery(true);
+    try {
+      const response = await updateEmailDeliveryConfiguration({
+        provider: emailDeliveryProvider
+      });
+      notify(response.message || "Email delivery provider updated.", "success");
+    } catch (error) {
+      notify(error.message || "Could not update email delivery provider.", "danger");
+    } finally {
+      setIsSavingEmailDelivery(false);
+    }
+  };
+
   const SECTIONS = [
     {
       id: "profile",
@@ -144,6 +194,18 @@ function SettingsPage() {
       )
     }
   ];
+  if (isAdmin) {
+    SECTIONS.push({
+      id: "email-delivery",
+      label: "Email Delivery",
+      icon: (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 4h16v16H4z"/>
+          <path d="m4 8 8 5 8-5"/>
+        </svg>
+      )
+    });
+  }
 
   return (
     <PortalLayout
@@ -308,6 +370,50 @@ function SettingsPage() {
               <div className="kr-settings-actions">
                 <button type="button" className="kr-settings-save-btn" onClick={savePreferences}>
                   Save Preferences
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeSection === "email-delivery" && isAdmin && (
+            <div className="kr-settings-card">
+              <h2 className="kr-settings-card-title">System Email Delivery</h2>
+              <p className="kr-settings-card-sub">
+                Select how the platform sends emails to clients. For MVP, use Resend.
+              </p>
+              <div className="kr-settings-grid">
+                <div className="kr-settings-field">
+                  <label className="kr-settings-field-label">Active Provider</label>
+                  <select
+                    className="kr-form-input"
+                    value={emailDeliveryProvider}
+                    onChange={(event) => setEmailDeliveryProvider(event.target.value)}
+                    disabled={isLoadingEmailDelivery || isSavingEmailDelivery}
+                  >
+                    {(emailDeliveryOptions.length
+                      ? emailDeliveryOptions
+                      : [
+                          { id: "resend", label: "Resend (recommended for MVP)" },
+                          { id: "smtp", label: "SMTP (custom mail server)" },
+                          { id: "disabled", label: "Disabled (no outbound email)" }
+                        ]
+                    ).map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="kr-settings-actions">
+                <button
+                  type="button"
+                  className="kr-settings-save-btn"
+                  onClick={handleSaveEmailDeliveryProvider}
+                  disabled={isLoadingEmailDelivery || isSavingEmailDelivery}
+                >
+                  {isSavingEmailDelivery ? "Saving..." : "Save Email Provider"}
                 </button>
               </div>
             </div>

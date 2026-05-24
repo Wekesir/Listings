@@ -55,6 +55,30 @@ npm run dev
 
 Frontend dev URL is usually shown as `http://localhost:5173`.
 
+## Social Signup + Email Verification Setup
+
+To enable Google/Apple signup and email verification codes:
+
+1. Copy backend env template:
+   ```bash
+   cp RealEstateBackend/.env.example RealEstateBackend/.env
+   ```
+2. Set OAuth credentials in `RealEstateBackend/.env`:
+   - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
+   - `APPLE_OAUTH_CLIENT_ID`, `APPLE_OAUTH_TEAM_ID`, `APPLE_OAUTH_KEY_ID`, `APPLE_OAUTH_PRIVATE_KEY`
+3. Set SMTP credentials:
+   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
+4. Keep callback URLs aligned with your backend host:
+   - `GOOGLE_OAUTH_CALLBACK_URL`
+   - `APPLE_OAUTH_CALLBACK_URL`
+5. Ensure frontend base URL is set:
+   - `APP_FRONTEND_URL` (typically `http://localhost:5173`)
+
+If OAuth/SMTP values are not set, social buttons or verification email delivery will not fully function.
+
+Admin users can now choose the active outbound email provider from `/settings` -> `Email Delivery`.
+For MVP, set provider to `resend` and configure `RESEND_API_KEY` + `RESEND_FROM`.
+
 ## Useful Docker Commands
 
 Stop containers:

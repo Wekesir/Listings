@@ -1,4 +1,5 @@
 import { apiRequest } from "./apiClient";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
 export async function registerAccount(payload) {
   return apiRequest("/api/auth/register", {
@@ -17,6 +18,40 @@ export async function loginAccount(payload) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
+  });
+}
+
+export async function verifyEmailCode(payload) {
+  return apiRequest("/api/auth/verify-email-code", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+}
+
+export async function resendVerificationCode(payload) {
+  return apiRequest("/api/auth/resend-verification-code", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+}
+
+export function getSocialAuthStartUrl(provider) {
+  const normalizedProvider = String(provider || "").trim().toLowerCase();
+  if (!["google", "apple"].includes(normalizedProvider)) {
+    throw new Error("Unsupported social provider");
+  }
+  return `${API_BASE_URL}/api/auth/oauth/${normalizedProvider}`;
+}
+
+export async function getSocialAuthProvidersAvailability() {
+  return apiRequest("/api/auth/oauth/providers", {
+    method: "GET"
   });
 }
 
@@ -138,6 +173,22 @@ export async function resolveListingReport(reportId, payload) {
 export async function getListingPricingConfiguration() {
   return apiRequest("/api/auth/listing-pricing", {
     method: "GET"
+  });
+}
+
+export async function getEmailDeliveryConfiguration() {
+  return apiRequest("/api/auth/email-delivery", {
+    method: "GET"
+  });
+}
+
+export async function updateEmailDeliveryConfiguration(payload) {
+  return apiRequest("/api/auth/email-delivery", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
   });
 }
 
