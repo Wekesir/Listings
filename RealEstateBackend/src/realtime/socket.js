@@ -1,4 +1,5 @@
 const { Server } = require("socket.io");
+const { ACCESS_ACTIONS, MODULE_KEYS, hasModulePermission } = require("../utils/accessControl");
 
 let ioInstance = null;
 
@@ -32,9 +33,14 @@ function initRealtime(httpServer, sessionMiddleware) {
     const sessionUser = socket.user || socket.request?.session?.user;
     const userId = Number(sessionUser?.id);
     const accountType = String(sessionUser?.accountType || "").toLowerCase();
+    const canMonitorAllConversations = hasModulePermission(
+      sessionUser,
+      MODULE_KEYS.ADMIN_MESSAGES,
+      ACCESS_ACTIONS.VIEW
+    );
 
     socket.join(userRoom(userId));
-    if (accountType === "admin") {
+    if (canMonitorAllConversations) {
       socket.join("admins");
     }
 
@@ -71,8 +77,16 @@ function emitNewMessage(userIds, payload) {
   ioInstance.to("admins").emit("admin:new-message", payload);
 }
 
+function emitListingMetricsUpdated(userId, payload) {
+  if (!ioInstance) return;
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) return;
+  ioInstance.to(userRoom(numericUserId)).emit("listings:metrics-updated", payload || {});
+}
+
 module.exports = {
   initRealtime,
   emitConversationUpdated,
-  emitNewMessage
+  emitNewMessage,
+  emitListingMetricsUpdated
 };

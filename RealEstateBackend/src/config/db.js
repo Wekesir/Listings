@@ -85,8 +85,10 @@ async function initializeDatabase() {
       full_name VARCHAR(255) NOT NULL,
       email VARCHAR(255) NOT NULL UNIQUE,
       phone VARCHAR(20) NULL,
+      country_code CHAR(2) NOT NULL DEFAULT 'KE',
       password VARCHAR(255) NOT NULL,
-      account_type ENUM('lister', 'viewer', 'admin') NOT NULL,
+      account_type ENUM('lister', 'viewer', 'admin', 'employee') NOT NULL,
+      employee_role_id BIGINT NULL,
       subscription_tier ENUM('standard', 'premium') NOT NULL DEFAULT 'standard',
       auth_provider ENUM('local', 'google', 'apple') NOT NULL DEFAULT 'local',
       provider_subject VARCHAR(255) NULL,
@@ -130,10 +132,10 @@ async function initializeDatabase() {
   `);
 
   const accountTypeColumnType = String(accountTypeColumnRows?.[0]?.columnType || "");
-  if (!accountTypeColumnType.includes("'admin'")) {
+  if (!accountTypeColumnType.includes("'employee'")) {
     await pool.query(`
       ALTER TABLE users
-      MODIFY COLUMN account_type ENUM('lister', 'viewer', 'admin') NOT NULL
+      MODIFY COLUMN account_type ENUM('lister', 'viewer', 'admin', 'employee') NOT NULL
     `);
   }
 
@@ -152,6 +154,26 @@ async function initializeDatabase() {
       ADD COLUMN phone VARCHAR(20) NULL AFTER email
     `);
   }
+
+  const [countryCodeColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'country_code'
+  `);
+  if (Number(countryCodeColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN country_code CHAR(2) NOT NULL DEFAULT 'KE' AFTER phone
+    `);
+  }
+
+  await pool.query(`
+    UPDATE users
+    SET country_code = 'KE'
+    WHERE country_code IS NULL OR TRIM(country_code) = ''
+  `);
 
   const [isBannedColumnRows] = await pool.query(`
     SELECT COUNT(*) AS count
@@ -390,6 +412,84 @@ async function initializeDatabase() {
     )
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS employee_roles (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      role_name VARCHAR(120) NOT NULL UNIQUE,
+      role_description VARCHAR(255) NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS employee_role_permissions (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      role_id BIGINT NOT NULL,
+      module_key VARCHAR(100) NOT NULL,
+      submodule_key VARCHAR(100) NOT NULL DEFAULT '*',
+      can_view TINYINT(1) NOT NULL DEFAULT 0,
+      can_manage TINYINT(1) NOT NULL DEFAULT 0,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_employee_role_permission (role_id, module_key, submodule_key),
+      INDEX idx_employee_role_permissions_role (role_id),
+      CONSTRAINT fk_employee_role_permissions_role
+        FOREIGN KEY (role_id) REFERENCES employee_roles(id)
+        ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_module_overrides (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      module_key VARCHAR(100) NOT NULL,
+      submodule_key VARCHAR(100) NOT NULL DEFAULT '*',
+      can_view TINYINT(1) NOT NULL DEFAULT 0,
+      can_manage TINYINT(1) NOT NULL DEFAULT 0,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_user_module_override (user_id, module_key, submodule_key),
+      INDEX idx_user_module_overrides_user (user_id),
+      CONSTRAINT fk_user_module_overrides_user
+        FOREIGN KEY (user_id) REFERENCES users(id)
+        ON DELETE CASCADE
+    )
+  `);
+
+  const [employeeRoleIdColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'employee_role_id'
+  `);
+  if (Number(employeeRoleIdColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN employee_role_id BIGINT NULL AFTER account_type
+    `);
+  }
+
+  const [employeeRoleFkRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND CONSTRAINT_NAME = 'fk_users_employee_role'
+      AND COLUMN_NAME = 'employee_role_id'
+  `);
+  if (Number(employeeRoleFkRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD CONSTRAINT fk_users_employee_role
+        FOREIGN KEY (employee_role_id) REFERENCES employee_roles(id)
+        ON DELETE SET NULL
+    `);
+  }
+
   const [emailProviderSettingRows] = await pool.execute(
     `
       SELECT setting_key
@@ -426,6 +526,8 @@ async function initializeDatabase() {
       is_published TINYINT(1) NOT NULL DEFAULT 1,
       payment_intent ENUM('publish_premium', 'upgrade_premium') NULL,
       visibility_expires_at DATETIME NULL,
+      sponsorship_warning_sent_at DATETIME NULL,
+      sponsorship_expired_notice_sent_at DATETIME NULL,
       is_expired TINYINT(1) NOT NULL DEFAULT 0,
       expired_at DATETIME NULL,
       is_soft_deleted TINYINT(1) NOT NULL DEFAULT 0,
@@ -438,6 +540,7 @@ async function initializeDatabase() {
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       INDEX idx_properties_owner_created (owner_id, created_at),
       INDEX idx_properties_listing_visibility (listing_status, is_soft_deleted),
+      INDEX idx_properties_sponsorship_expiry (payment_status, visibility_expires_at),
       CONSTRAINT fk_properties_owner
         FOREIGN KEY (owner_id) REFERENCES users(id)
         ON DELETE SET NULL,
@@ -446,6 +549,48 @@ async function initializeDatabase() {
         ON DELETE SET NULL
     )
   `);
+
+  const [sponsorshipWarningSentAtColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'properties'
+      AND COLUMN_NAME = 'sponsorship_warning_sent_at'
+  `);
+  if (Number(sponsorshipWarningSentAtColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE properties
+      ADD COLUMN sponsorship_warning_sent_at DATETIME NULL AFTER visibility_expires_at
+    `);
+  }
+
+  const [sponsorshipExpiredNoticeSentAtColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'properties'
+      AND COLUMN_NAME = 'sponsorship_expired_notice_sent_at'
+  `);
+  if (Number(sponsorshipExpiredNoticeSentAtColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE properties
+      ADD COLUMN sponsorship_expired_notice_sent_at DATETIME NULL AFTER sponsorship_warning_sent_at
+    `);
+  }
+
+  const [propertiesSponsorshipExpiryIndexRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'properties'
+      AND INDEX_NAME = 'idx_properties_sponsorship_expiry'
+  `);
+  if (Number(propertiesSponsorshipExpiryIndexRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      CREATE INDEX idx_properties_sponsorship_expiry
+      ON properties (payment_status, visibility_expires_at)
+    `);
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS property_shortlists (
@@ -456,6 +601,46 @@ async function initializeDatabase() {
       UNIQUE KEY uniq_user_property_shortlist (user_id, property_id),
       INDEX idx_shortlist_user_created (user_id, created_at),
       CONSTRAINT fk_shortlist_user
+        FOREIGN KEY (user_id) REFERENCES users(id)
+        ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS listing_view_events (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      property_id INT NOT NULL,
+      owner_user_id INT NOT NULL,
+      viewer_user_id INT NULL,
+      viewer_session_key VARCHAR(128) NULL,
+      ip_address VARCHAR(64) NULL,
+      user_agent VARCHAR(255) NULL,
+      viewed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_listing_view_events_property_time (property_id, viewed_at),
+      INDEX idx_listing_view_events_owner_time (owner_user_id, viewed_at),
+      INDEX idx_listing_view_events_viewer_time (viewer_user_id, viewed_at),
+      INDEX idx_listing_view_events_session_time (viewer_session_key, viewed_at)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS property_alert_preferences (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      is_enabled TINYINT(1) NOT NULL DEFAULT 0,
+      search_term VARCHAR(180) NULL,
+      location_filter VARCHAR(180) NULL,
+      type_filter VARCHAR(20) NOT NULL DEFAULT 'all',
+      bedroom_filter VARCHAR(20) NOT NULL DEFAULT 'all',
+      suitability_filter VARCHAR(20) NOT NULL DEFAULT 'all',
+      popularity_filter VARCHAR(20) NOT NULL DEFAULT 'all',
+      min_price DECIMAL(12, 2) NULL,
+      max_price DECIMAL(12, 2) NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_property_alert_preferences_user (user_id),
+      INDEX idx_property_alert_preferences_enabled (is_enabled),
+      CONSTRAINT fk_property_alert_preferences_user
         FOREIGN KEY (user_id) REFERENCES users(id)
         ON DELETE CASCADE
     )

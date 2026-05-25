@@ -5,10 +5,13 @@ import {
   createProperty,
   createListingPaymentCheckout,
   getListingPaymentStatus,
+  getMyListingEngagement,
   getProperties,
   getMyProperties,
   getPropertiesForAdmin,
-  updateProperty
+  updateProperty,
+  getPropertyAlertPreference,
+  updatePropertyAlertPreference
 } from "../services/propertyService";
 import { notify } from "../utils/notify";
 import { useShortlist } from "../hooks/useShortlist";
@@ -19,6 +22,7 @@ import {
 } from "../utils/propertyMedia";
 import PropertyMediaBadge from "../components/PropertyMediaBadge";
 import { getStoredUser } from "../utils/session";
+import { getCountryLocations, resolveUserCountryCode } from "../utils/locationCatalog";
 
 const BASIC_INCLUDED_IMAGE_LIMIT = 2;
 const PAID_MAX_IMAGE_LIMIT = 12;
@@ -158,6 +162,58 @@ function formatDateTime(value) {
   });
 }
 
+function normalizeLocationValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getLocationTokens(location) {
+  const normalized = normalizeLocationValue(location);
+  if (!normalized) return [];
+  return normalized
+    .split(/[,/|-]/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function doesLocationMatch(itemLocation, selectedLocation) {
+  const itemNormalized = normalizeLocationValue(itemLocation);
+  const selectedNormalized = normalizeLocationValue(selectedLocation);
+  if (!selectedNormalized || selectedNormalized === "all") return true;
+  if (!itemNormalized) return false;
+  if (itemNormalized === selectedNormalized) return true;
+  if (itemNormalized.includes(selectedNormalized)) return true;
+  const tokens = getLocationTokens(itemLocation);
+  return tokens.includes(selectedNormalized);
+}
+
+function normalizeAlertPayloadFilters(filters = {}) {
+  return {
+    searchTerm: String(filters.searchTerm || "").trim(),
+    locationFilter: String(filters.locationFilter || "all").trim() || "all",
+    typeFilter: String(filters.typeFilter || "all").trim().toLowerCase() || "all",
+    bedroomFilter: String(filters.bedroomFilter || "all").trim().toLowerCase() || "all",
+    suitabilityFilter: String(filters.suitabilityFilter || "all").trim().toLowerCase() || "all",
+    popularityFilter: String(filters.popularityFilter || "all").trim().toLowerCase() || "all",
+    minPrice: String(filters.minPrice || "").trim(),
+    maxPrice: String(filters.maxPrice || "").trim()
+  };
+}
+
+function areAlertFiltersEqual(left = {}, right = {}) {
+  const l = normalizeAlertPayloadFilters(left);
+  const r = normalizeAlertPayloadFilters(right);
+  return (
+    l.searchTerm === r.searchTerm &&
+    l.locationFilter === r.locationFilter &&
+    l.typeFilter === r.typeFilter &&
+    l.bedroomFilter === r.bedroomFilter &&
+    l.suitabilityFilter === r.suitabilityFilter &&
+    l.popularityFilter === r.popularityFilter &&
+    l.minPrice === r.minPrice &&
+    l.maxPrice === r.maxPrice
+  );
+}
+
 function ListingsPage() {
   const navigate = useNavigate();
   const currentUser = getStoredUser();
@@ -171,6 +227,7 @@ function ListingsPage() {
   const [isCreatingListing, setIsCreatingListing] = useState(false);
   const [recentListingId, setRecentListingId] = useState(null);
   const [paymentByListingId, setPaymentByListingId] = useState({});
+  const [engagementByListingId, setEngagementByListingId] = useState({});
   const [paymentModalListing, setPaymentModalListing] = useState(null);
   const [selectedProvider, setSelectedProvider] = useState("mpesa");
   const [selectedDurationMonths, setSelectedDurationMonths] = useState(1);
@@ -192,6 +249,9 @@ function ListingsPage() {
   const [sortBy, setSortBy] = useState("price-desc");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
+  const [alertPreference, setAlertPreference] = useState(null);
+  const [isLoadingAlertPreference, setIsLoadingAlertPreference] = useState(false);
+  const [isSavingAlertPreference, setIsSavingAlertPreference] = useState(false);
   const [formState, setFormState] = useState({
     title: "",
     location: "",
@@ -306,6 +366,73 @@ function ListingsPage() {
       active = false;
     };
   }, [isLister, myProperties]);
+
+  useEffect(() => {
+    if (!isLister) {
+      setEngagementByListingId({});
+      return;
+    }
+
+    let active = true;
+    const loadEngagement = async () => {
+      try {
+        const summary = await getMyListingEngagement();
+        if (!active) return;
+        const listings = Array.isArray(summary?.listings) ? summary.listings : [];
+        const mapped = {};
+        listings.forEach((item) => {
+          const propertyId = Number(item?.propertyId);
+          if (!Number.isFinite(propertyId)) return;
+          mapped[propertyId] = {
+            views: Number(item?.views || 0),
+            interestedShortlist: Number(item?.interestedShortlist || 0),
+            interestedInquiry: Number(item?.interestedInquiry || 0),
+            reachedOut: Number(item?.reachedOut || 0)
+          };
+        });
+        setEngagementByListingId(mapped);
+      } catch (_error) {
+        if (active) {
+          setEngagementByListingId({});
+        }
+      }
+    };
+    void loadEngagement();
+    return () => {
+      active = false;
+    };
+  }, [isLister, myProperties.length]);
+
+  useEffect(() => {
+    if (!currentUser?.id) {
+      setAlertPreference(null);
+      return;
+    }
+
+    let active = true;
+    const loadAlertPreference = async () => {
+      setIsLoadingAlertPreference(true);
+      try {
+        const response = await getPropertyAlertPreference();
+        if (!active) return;
+        setAlertPreference({
+          enabled: Boolean(response?.enabled),
+          filters: normalizeAlertPayloadFilters(response?.filters || {})
+        });
+      } catch (_error) {
+        if (!active) return;
+        setAlertPreference(null);
+      } finally {
+        if (active) {
+          setIsLoadingAlertPreference(false);
+        }
+      }
+    };
+    void loadAlertPreference();
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.id]);
 
   const handleInputChange = (event) => {
     const { name, value } = event.target;
@@ -590,9 +717,14 @@ function ListingsPage() {
   }, [myProperties]);
 
   const locationOptions = useMemo(() => {
-    return [...new Set(scopedProperties.map((item) => item.location).filter(Boolean))]
-      .sort((a, b) => a.localeCompare(b));
-  }, [scopedProperties]);
+    const dynamicLocations = scopedProperties
+      .map((item) => String(item?.location || "").trim())
+      .filter(Boolean);
+    const countryCode = resolveUserCountryCode(currentUser);
+    const countryLocations = getCountryLocations(countryCode);
+    const merged = Array.from(new Set([...countryLocations, ...dynamicLocations]));
+    return merged.sort((a, b) => a.localeCompare(b));
+  }, [scopedProperties, currentUser]);
 
   const displayedProperties = useMemo(() => {
     let filtered = [...scopedProperties];
@@ -609,7 +741,7 @@ function ListingsPage() {
     }
 
     if (locationFilter !== "all") {
-      filtered = filtered.filter((item) => item.location === locationFilter);
+      filtered = filtered.filter((item) => doesLocationMatch(item.location, locationFilter));
     }
 
     if (typeFilter !== "all") {
@@ -802,6 +934,36 @@ function ListingsPage() {
     maxPrice
   ]);
 
+  const currentAlertFilters = useMemo(() => normalizeAlertPayloadFilters({
+    searchTerm,
+    locationFilter,
+    typeFilter,
+    bedroomFilter,
+    suitabilityFilter,
+    popularityFilter,
+    minPrice,
+    maxPrice
+  }), [
+    searchTerm,
+    locationFilter,
+    typeFilter,
+    bedroomFilter,
+    suitabilityFilter,
+    popularityFilter,
+    minPrice,
+    maxPrice
+  ]);
+
+  const isCurrentFilterAlertEnabled = useMemo(() => {
+    if (!alertPreference?.enabled) return false;
+    return areAlertFiltersEqual(alertPreference.filters, currentAlertFilters);
+  }, [alertPreference, currentAlertFilters]);
+
+  const hasSavedAlertForDifferentFilters = useMemo(() => {
+    if (!alertPreference?.enabled) return false;
+    return !areAlertFiltersEqual(alertPreference.filters, currentAlertFilters);
+  }, [alertPreference, currentAlertFilters]);
+
   const resetAllFilters = () => {
     setLocationFilter("all");
     setTypeFilter("all");
@@ -812,6 +974,58 @@ function ListingsPage() {
     setMinPrice("");
     setMaxPrice("");
     setSearchTerm("");
+  };
+
+  const handleToggleFilterAlert = async (nextEnabled) => {
+    if (!currentUser?.id) {
+      notify("Please log in to enable listing alerts.", "warning");
+      return;
+    }
+    setIsSavingAlertPreference(true);
+    try {
+      const response = await updatePropertyAlertPreference({
+        enabled: Boolean(nextEnabled),
+        filters: currentAlertFilters
+      });
+      const updated = {
+        enabled: Boolean(response?.enabled),
+        filters: normalizeAlertPayloadFilters(response?.filters || currentAlertFilters)
+      };
+      setAlertPreference(updated);
+      notify(
+        nextEnabled
+          ? "Listing alert enabled for your current filters."
+          : "Listing alert disabled.",
+        "success"
+      );
+    } catch (error) {
+      notify(error.message || "Could not update listing alert preference.", "danger");
+    } finally {
+      setIsSavingAlertPreference(false);
+    }
+  };
+
+  const handleClearFilterAlert = async () => {
+    if (!currentUser?.id) {
+      notify("Please log in to manage listing alerts.", "warning");
+      return;
+    }
+    setIsSavingAlertPreference(true);
+    try {
+      const response = await updatePropertyAlertPreference({
+        enabled: false,
+        filters: currentAlertFilters
+      });
+      setAlertPreference({
+        enabled: Boolean(response?.enabled),
+        filters: normalizeAlertPayloadFilters(response?.filters || currentAlertFilters)
+      });
+      notify("Listing alert cleared.", "success");
+    } catch (error) {
+      notify(error.message || "Could not clear listing alert.", "danger");
+    } finally {
+      setIsSavingAlertPreference(false);
+    }
   };
 
   const getPaymentMeta = (item) => {
@@ -1167,6 +1381,40 @@ function ListingsPage() {
             <span className="kr-portal-filter-open-count">{activeFilterCount}</span>
           )}
         </button>
+        <div className={`kr-listing-alert-toolbar-pill${alertPreference?.enabled ? " is-active" : ""}`}>
+          <span className="kr-listing-alert-toolbar-dot" aria-hidden="true" />
+          <span className="kr-listing-alert-toolbar-icon" aria-hidden="true">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+            </svg>
+          </span>
+          <span className="kr-listing-alert-toolbar-label">
+            Alerts {alertPreference?.enabled ? "ON" : "OFF"}
+          </span>
+          <span className="kr-listing-alert-toolbar-hint" title="Alerts are sent only for newly uploaded listings that match your saved filters.">
+            New uploads only
+          </span>
+          {alertPreference?.enabled ? (
+            <button
+              type="button"
+              className="kr-listing-alert-toolbar-action"
+              onClick={handleClearFilterAlert}
+              disabled={isLoadingAlertPreference || isSavingAlertPreference}
+            >
+              Clear
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="kr-listing-alert-toolbar-action"
+              onClick={() => setIsFilterModalOpen(true)}
+              disabled={isLoadingAlertPreference || isSavingAlertPreference}
+            >
+              Set alert
+            </button>
+          )}
+        </div>
       </div>
 
       {isFilterModalOpen && (
@@ -1417,6 +1665,57 @@ function ListingsPage() {
               </div>
             </div>
 
+            <div className={`kr-filter-alert-toggle${isCurrentFilterAlertEnabled ? " is-active" : ""}`}>
+              <div>
+                <p className="kr-filter-alert-title">
+                  <span className="kr-filter-alert-icon" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                    </svg>
+                  </span>
+                  Notify me for new matching listings
+                </p>
+                <p className="kr-filter-alert-sub">
+                  Receive a branded email whenever a newly uploaded property matches these exact filters.
+                </p>
+                {isCurrentFilterAlertEnabled && (
+                  <span className="kr-filter-alert-state kr-filter-alert-state--active">
+                    <span className="kr-filter-alert-state-dot" aria-hidden="true" />
+                    Alert active for current filters
+                  </span>
+                )}
+                {hasSavedAlertForDifferentFilters && (
+                  <span className="kr-filter-alert-state">
+                    <span className="kr-filter-alert-state-dot" aria-hidden="true" />
+                    Alert saved for different filters — toggle to replace
+                  </span>
+                )}
+              </div>
+              <div className="kr-filter-alert-actions">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isCurrentFilterAlertEnabled}
+                  className={`kr-pill-toggle${isCurrentFilterAlertEnabled ? " on" : ""}`}
+                  onClick={() => handleToggleFilterAlert(!isCurrentFilterAlertEnabled)}
+                  disabled={isLoadingAlertPreference || isSavingAlertPreference}
+                >
+                  <span className="kr-pill-thumb"></span>
+                </button>
+                {alertPreference?.enabled && (
+                  <button
+                    type="button"
+                    className="kr-filter-alert-clear-btn"
+                    onClick={handleClearFilterAlert}
+                    disabled={isLoadingAlertPreference || isSavingAlertPreference}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* ── Footer ── */}
             <div className="kr-portal-filter-modal-actions">
               <button
@@ -1497,6 +1796,12 @@ function ListingsPage() {
             const listingStatus = getListingStatus(item);
             const isDraftListing = listingStatus === LISTING_STATUS.DRAFT;
             const paymentMeta = getPaymentMeta(item);
+            const engagement = engagementByListingId[Number(item.id)] || {
+              views: 0,
+              interestedShortlist: 0,
+              interestedInquiry: 0,
+              reachedOut: 0
+            };
             const shouldShowPayCta = paymentMeta.isExpired || !paymentMeta.premiumMediaUnlocked;
             return (
               <div className="col-md-6 col-xl-4" key={item.id}>
@@ -1566,6 +1871,20 @@ function ListingsPage() {
 
                     {isLister && isOwnedByCurrentUser && (
                       <>
+                      <div className="kr-listing-engagement-row">
+                        <span className="kr-listing-engagement-pill">
+                          Views {engagement.views.toLocaleString("en-KE")}
+                        </span>
+                        <span className="kr-listing-engagement-pill">
+                          Shortlist interest {engagement.interestedShortlist.toLocaleString("en-KE")}
+                        </span>
+                        <span className="kr-listing-engagement-pill">
+                          Inquiry interest {engagement.interestedInquiry.toLocaleString("en-KE")}
+                        </span>
+                        <span className="kr-listing-engagement-pill">
+                          Reached out {engagement.reachedOut.toLocaleString("en-KE")}
+                        </span>
+                      </div>
                       <div className="kr-listing-payment-row">
                         <span className={`kr-listing-payment-badge kr-listing-payment-badge--${isDraftListing ? "draft" : "paid"}`}>
                           {isDraftListing ? "Draft" : "Published"}

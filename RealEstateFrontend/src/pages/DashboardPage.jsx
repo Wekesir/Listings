@@ -5,10 +5,12 @@ import { getStoredUser } from "../utils/session";
 import {
   getProperties,
   getPropertiesForAdmin,
-  getShortlistedProperties
+  getShortlistedProperties,
+  getMyListingEngagement
 } from "../services/propertyService";
 import { getAnalyticsSummary } from "../services/analyticsService";
 import { getAuthAuditLogs, getManageableUsers } from "../services/authService";
+import { getRealtimeSocket } from "../services/realtimeSocket";
 import { notify } from "../utils/notify";
 
 function getSuggestedMatchCount(shortlistedProperties, allProperties) {
@@ -67,6 +69,8 @@ function DashboardPage() {
 
   const [analyticsSummary, setAnalyticsSummary] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [engagementSummary, setEngagementSummary] = useState(null);
+  const [engagementLoading, setEngagementLoading] = useState(false);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
@@ -131,8 +135,50 @@ function DashboardPage() {
     return () => { active = false; };
   }, [refreshNonce]);
 
+  useEffect(() => {
+    if (isAdmin) {
+      setEngagementSummary(null);
+      setEngagementLoading(false);
+      return undefined;
+    }
+
+    let active = true;
+    const load = async () => {
+      setEngagementLoading(true);
+      try {
+        const summary = await getMyListingEngagement();
+        if (active) setEngagementSummary(summary);
+      } catch {
+        if (active) setEngagementSummary(null);
+      } finally {
+        if (active) setEngagementLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [isAdmin, refreshNonce]);
+
+  useEffect(() => {
+    if (isAdmin) return undefined;
+    const socket = getRealtimeSocket();
+    let refreshTimeout = null;
+    const handleMetricsUpdated = () => {
+      if (refreshTimeout) {
+        clearTimeout(refreshTimeout);
+      }
+      refreshTimeout = setTimeout(() => {
+        setRefreshNonce((prev) => prev + 1);
+      }, 300);
+    };
+    socket.on("listings:metrics-updated", handleMetricsUpdated);
+    return () => {
+      socket.off("listings:metrics-updated", handleMetricsUpdated);
+      if (refreshTimeout) clearTimeout(refreshTimeout);
+    };
+  }, [isAdmin]);
+
   const triggerDashboardRefresh = () => setRefreshNonce((prev) => prev + 1);
-  const isRefreshing = dashboardLoading || analyticsLoading;
+  const isRefreshing = dashboardLoading || analyticsLoading || engagementLoading;
 
   const shortlistedProperties = useMemo(() => {
     if (!allProperties.length) return [];
@@ -179,6 +225,48 @@ function DashboardPage() {
       { label: "Suggested Matches", value: listingStats.suggestionCount, sub: "Based on shortlist", color: "amber", icon: <IcoPin />, link: "/shortlist" }
     ];
   }, [isAdmin, listingStats]);
+
+  const engagementCards = useMemo(() => {
+    if (isAdmin) return [];
+    const totals = engagementSummary?.totals || {};
+    return [
+      {
+        label: "Property views",
+        value: Number(totals.views || 0),
+        helper: "Unique tracked detail-page visits"
+      },
+      {
+        label: "Interested (shortlist)",
+        value: Number(totals.interestedShortlist || 0),
+        helper: "Users who saved your listings"
+      },
+      {
+        label: "Interested (inquiry)",
+        value: Number(totals.interestedInquiry || 0),
+        helper: "Users who started inquiry threads"
+      },
+      {
+        label: "Reached out",
+        value: Number(totals.reachedOut || 0),
+        helper: "Users who sent inquiry messages"
+      }
+    ];
+  }, [isAdmin, engagementSummary]);
+
+  const topEngagementListings = useMemo(() => {
+    const listings = Array.isArray(engagementSummary?.listings) ? engagementSummary.listings : [];
+    return listings
+      .map((item) => ({
+        ...item,
+        score:
+          Number(item?.views || 0) +
+          Number(item?.interestedShortlist || 0) * 2 +
+          Number(item?.interestedInquiry || 0) * 3 +
+          Number(item?.reachedOut || 0) * 4
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+  }, [engagementSummary]);
 
   const actionTiles = useMemo(() => {
     const tiles = [
@@ -248,6 +336,67 @@ function DashboardPage() {
           })}
         </div>
       </div>
+
+      {!isAdmin && (
+        <div className="kr-db-section-row">
+          <SectionHead eyebrow="Performance" title="Live listing engagement" />
+          <div className="kr-db-analytics-card">
+            <div className="kr-db-analytics-live">
+              <span className="kr-db-analytics-live-dot" />
+              Real-time updates
+            </div>
+            {engagementLoading ? (
+              <div className="kr-db-analytics-grid">
+                {[1, 2, 3, 4].map((n) => (
+                  <div key={n} className="kr-db-analytics-metric">
+                    <span className="kr-db-skel kr-db-skel--sm" />
+                    <span className="kr-db-skel kr-db-skel--lg" style={{ marginTop: "0.5rem" }} />
+                  </div>
+                ))}
+              </div>
+            ) : engagementSummary ? (
+              <>
+                <div className="kr-db-analytics-grid">
+                  {engagementCards.map((metric) => (
+                    <div className="kr-db-analytics-metric" key={metric.label}>
+                      <span className="kr-db-analytics-metric-label">{metric.label}</span>
+                      <span className="kr-db-analytics-metric-value">{metric.value.toLocaleString("en-KE")}</span>
+                      <span className="kr-db-stat-sub">{metric.helper}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3">
+                  <p className="kr-db-panel-title" style={{ marginBottom: "0.5rem" }}>Top-performing listings</p>
+                  {topEngagementListings.length ? (
+                    <div className="kr-db-actions-grid">
+                      {topEngagementListings.map((item) => (
+                        <button
+                          type="button"
+                          key={item.propertyId}
+                          className="kr-db-action-tile kr-db-action-tile--blue"
+                          onClick={() => navigate("/listings")}
+                        >
+                          <span className="kr-db-action-body">
+                            <span className="kr-db-action-title">{item.title || `Listing #${item.propertyId}`}</span>
+                            <span className="kr-db-action-sub">
+                              {Number(item.views || 0)} views · {Number(item.interestedShortlist || 0)} shortlist · {Number(item.interestedInquiry || 0)} inquiry interest · {Number(item.reachedOut || 0)} reached out
+                            </span>
+                          </span>
+                          <span className="kr-db-action-arrow"><IcoArrow /></span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="kr-db-analytics-empty">Your listing engagement metrics will appear after visitors interact with your properties.</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="kr-db-analytics-empty">Listing engagement metrics are currently unavailable.</p>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="kr-db-section-row">
         <SectionHead eyebrow="Navigation" title="Quick actions" />

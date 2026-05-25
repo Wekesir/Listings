@@ -17,6 +17,12 @@ export async function getMyProperties() {
   });
 }
 
+export async function getMyListingEngagement() {
+  return apiRequest("/api/properties/mine/engagement", {
+    method: "GET"
+  });
+}
+
 export async function getPropertiesForAdmin(includeDeleted = true) {
   const queryString = includeDeleted ? "?includeDeleted=true" : "";
   return apiRequest(`/api/properties${queryString}`, {
@@ -33,6 +39,22 @@ export async function getPropertyById(id) {
 export async function getShortlistedProperties() {
   return apiRequest("/api/properties/shortlist", {
     method: "GET"
+  });
+}
+
+export async function getPropertyAlertPreference() {
+  return apiRequest("/api/properties/alerts/preference", {
+    method: "GET"
+  });
+}
+
+export async function updatePropertyAlertPreference(payload = {}) {
+  return apiRequest("/api/properties/alerts/preference", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
   });
 }
 

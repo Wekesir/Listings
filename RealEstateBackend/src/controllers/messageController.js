@@ -1,11 +1,16 @@
 const properties = require("../data/properties");
 const { pool } = require("../config/db");
-const { emitConversationUpdated, emitNewMessage } = require("../realtime/socket");
+const { emitConversationUpdated, emitNewMessage, emitListingMetricsUpdated } = require("../realtime/socket");
+const { sendNewMessageNotificationEmail } = require("../services/auth/emailService");
+const { createUnreadEmailScheduler } = require("../utils/unreadEmailScheduler");
+const { ACCESS_ACTIONS, MODULE_KEYS, hasModulePermission } = require("../utils/accessControl");
 
 const DEFAULT_PAGE_LIMIT = 20;
 const MAX_PAGE_LIMIT = 100;
 const MIN_MESSAGE_LENGTH = 2;
 const MAX_MESSAGE_LENGTH = 5000;
+const UNREAD_EMAIL_DELAY_MS = Math.max(15000, Number(process.env.UNREAD_MESSAGE_EMAIL_DELAY_MS || 90000));
+const APP_FRONTEND_URL = String(process.env.APP_FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
 
 function getSessionUser(req) {
   return req.session?.user || null;
@@ -21,6 +26,142 @@ function parsePositiveInt(rawValue, fallback) {
 
 function normalizeMessage(rawValue) {
   return String(rawValue || "").trim();
+}
+
+function emitListerMetricsUpdate(listerUserId, propertyId, source) {
+  const numericListerId = Number(listerUserId);
+  const numericPropertyId = Number(propertyId);
+  if (!Number.isFinite(numericListerId) || numericListerId <= 0) return;
+  if (!Number.isFinite(numericPropertyId) || numericPropertyId <= 0) return;
+  emitListingMetricsUpdated(numericListerId, {
+    listerUserId: numericListerId,
+    propertyId: numericPropertyId,
+    source: String(source || "unknown"),
+    occurredAt: new Date().toISOString()
+  });
+}
+
+function resolveRecipientUserId(conversation, senderUserId) {
+  const viewerUserId = Number(conversation?.viewerUserId);
+  const listerUserId = Number(conversation?.listerUserId);
+  const senderId = Number(senderUserId);
+  if (senderId === viewerUserId) return listerUserId;
+  if (senderId === listerUserId) return viewerUserId;
+  return null;
+}
+
+function buildUnreadEmailTimerKey(conversationId, recipientUserId) {
+  const numericConversationId = Number(conversationId);
+  const numericRecipientId = Number(recipientUserId);
+  if (!Number.isFinite(numericConversationId) || numericConversationId <= 0) return null;
+  if (!Number.isFinite(numericRecipientId) || numericRecipientId <= 0) return null;
+  return `${numericConversationId}:${numericRecipientId}`;
+}
+
+async function sendUnreadMessageEmailIfStillUnread({
+  conversationId,
+  recipientUserId,
+  senderUserId
+}) {
+  const numericConversationId = Number(conversationId);
+  const numericRecipientId = Number(recipientUserId);
+  const numericSenderId = Number(senderUserId);
+  if (!Number.isFinite(numericConversationId) || numericConversationId <= 0) return;
+  if (!Number.isFinite(numericRecipientId) || numericRecipientId <= 0) return;
+  if (!Number.isFinite(numericSenderId) || numericSenderId <= 0) return;
+
+  try {
+    const [conversationRows] = await pool.execute(
+      `
+        SELECT
+          c.id,
+          c.property_id AS propertyId,
+          c.viewer_user_id AS viewerUserId,
+          c.lister_user_id AS listerUserId,
+          recipient.email AS recipientEmail,
+          recipient.full_name AS recipientName,
+          recipient.email_verified AS recipientEmailVerified,
+          sender.full_name AS senderName
+        FROM listing_conversations c
+        INNER JOIN users recipient ON recipient.id = ?
+        INNER JOIN users sender ON sender.id = ?
+        WHERE c.id = ?
+          AND (c.viewer_user_id = ? OR c.lister_user_id = ?)
+        LIMIT 1
+      `,
+      [numericRecipientId, numericSenderId, numericConversationId, numericRecipientId, numericRecipientId]
+    );
+    const conversation = conversationRows[0];
+    if (!conversation) return;
+    if (!conversation.recipientEmail || !Boolean(conversation.recipientEmailVerified)) return;
+
+    const [unreadRows] = await pool.execute(
+      `
+        SELECT COUNT(*) AS unreadCount
+        FROM listing_messages
+        WHERE conversation_id = ?
+          AND sender_user_id <> ?
+          AND read_at IS NULL
+      `,
+      [numericConversationId, numericRecipientId]
+    );
+    const unreadCount = Number(unreadRows?.[0]?.unreadCount || 0);
+    if (unreadCount <= 0) return;
+
+    const [previewRows] = await pool.execute(
+      `
+        SELECT message_text AS messageText
+        FROM listing_messages
+        WHERE conversation_id = ?
+          AND sender_user_id <> ?
+          AND read_at IS NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `,
+      [numericConversationId, numericRecipientId]
+    );
+    const messagePreview = String(previewRows?.[0]?.messageText || "").trim().slice(0, 280);
+
+    const listing = properties.find((item) => Number(item.id) === Number(conversation.propertyId));
+    await sendNewMessageNotificationEmail({
+      toEmail: conversation.recipientEmail,
+      recipientName: conversation.recipientName,
+      senderName: conversation.senderName,
+      listingTitle: listing?.title || `Listing #${conversation.propertyId}`,
+      listingLocation: listing?.location || "",
+      unreadCount,
+      messagePreview,
+      conversationUrl: `${APP_FRONTEND_URL}/messages?conversation=${numericConversationId}`
+    });
+  } catch (error) {
+    console.error("message-unread-email-failed:", error.message);
+  }
+}
+
+const unreadEmailScheduler = createUnreadEmailScheduler({
+  delayMs: UNREAD_EMAIL_DELAY_MS,
+  handler: (payload) => sendUnreadMessageEmailIfStillUnread(payload)
+});
+
+function scheduleUnreadMessageEmailNotification({
+  conversationId,
+  recipientUserId,
+  senderUserId
+}) {
+  const numericConversationId = Number(conversationId);
+  const numericRecipientId = Number(recipientUserId);
+  const numericSenderId = Number(senderUserId);
+  if (!Number.isFinite(numericConversationId) || numericConversationId <= 0) return;
+  if (!Number.isFinite(numericRecipientId) || numericRecipientId <= 0) return;
+  if (!Number.isFinite(numericSenderId) || numericSenderId <= 0) return;
+
+  const timerKey = buildUnreadEmailTimerKey(numericConversationId, numericRecipientId);
+  if (!timerKey) return;
+  unreadEmailScheduler.schedule(timerKey, {
+    conversationId: numericConversationId,
+    recipientUserId: numericRecipientId,
+    senderUserId: numericSenderId
+  });
 }
 
 function isSoftDeletedListing(property) {
@@ -230,6 +371,12 @@ async function createListingInquiryConversation(req, res) {
     };
     emitConversationUpdated([viewerUserId, listerUserId], realtimePayload);
     emitNewMessage([viewerUserId, listerUserId], realtimePayload);
+    emitListerMetricsUpdate(listerUserId, propertyId, "inquiry_created");
+    scheduleUnreadMessageEmailNotification({
+      conversationId,
+      recipientUserId: listerUserId,
+      senderUserId: viewerUserId
+    });
 
     return res.status(201).json({
       message: "Inquiry sent successfully.",
@@ -344,7 +491,7 @@ async function listConversationMessages(req, res) {
   }
 
   const currentUserId = Number(sessionUser.id);
-  const isAdmin = String(sessionUser.accountType || "").toLowerCase() === "admin";
+  const isAdmin = hasModulePermission(sessionUser, MODULE_KEYS.ADMIN_MESSAGES, ACCESS_ACTIONS.VIEW);
   const isParticipant =
     Number(conversation.viewerUserId) === currentUserId ||
     Number(conversation.listerUserId) === currentUserId;
@@ -523,6 +670,18 @@ async function sendConversationMessage(req, res) {
     };
     emitConversationUpdated([viewerUserId, listerUserId], realtimePayload);
     emitNewMessage([viewerUserId, listerUserId], realtimePayload);
+    const senderIsViewer = currentUserId === viewerUserId;
+    if (senderIsViewer) {
+      emitListerMetricsUpdate(listerUserId, Number(conversation.propertyId), "message_sent");
+    }
+    const recipientUserId = resolveRecipientUserId(conversation, currentUserId);
+    if (senderIsViewer && recipientUserId === listerUserId) {
+      scheduleUnreadMessageEmailNotification({
+        conversationId,
+        recipientUserId,
+        senderUserId: currentUserId
+      });
+    }
 
     return res.status(201).json({
       message: "Message sent.",
@@ -585,9 +744,9 @@ async function listAdminConversations(req, res) {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (String(sessionUser.accountType || "").toLowerCase() !== "admin") {
+  if (!hasModulePermission(sessionUser, MODULE_KEYS.ADMIN_MESSAGES, ACCESS_ACTIONS.VIEW)) {
     return res.status(403).json({
-      message: "Only admin accounts can view all private conversations."
+      message: "You do not have permission to view all private conversations."
     });
   }
 
@@ -708,5 +867,9 @@ module.exports = {
   listConversationMessages,
   sendConversationMessage,
   markConversationAsRead,
-  listAdminConversations
+  listAdminConversations,
+  __testables: {
+    resolveRecipientUserId,
+    buildUnreadEmailTimerKey
+  }
 };

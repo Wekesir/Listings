@@ -12,6 +12,9 @@ const {
   createStripeCheckout,
   createMpesaCheckout
 } = require("../services/paymentService");
+const { sendNewMatchingListingAlertEmail } = require("../services/auth/emailService");
+const { emitListingMetricsUpdated } = require("../realtime/socket");
+const { ACCESS_ACTIONS, MODULE_KEYS, hasModulePermission } = require("../utils/accessControl");
 
 const BASIC_INCLUDED_IMAGE_LIMIT = Math.max(1, PAYMENT_CONFIG.basicIncludedImageLimit || 2);
 const PAID_MAX_IMAGE_LIMIT = Math.max(BASIC_INCLUDED_IMAGE_LIMIT, PAYMENT_CONFIG.paidMaxImageLimit || 12);
@@ -29,6 +32,7 @@ const LISTING_PAYMENT_INTENT = {
   PUBLISH_PREMIUM: "publish_premium",
   UPGRADE_PREMIUM: "upgrade_premium"
 };
+const VIEW_DEDUP_WINDOW_MINUTES = 30;
 
 function toDbDateTimeOrNull(value) {
   if (!value) return null;
@@ -263,6 +267,159 @@ function isVisibleToPublic(property) {
   return !isSoftDeleted(property) && isPublishedListing(property);
 }
 
+function normalizeAlertToken(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeAlertText(value, maxLength = 180) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.slice(0, maxLength);
+}
+
+function normalizeAlertEnum(value, allowed, fallback = "all") {
+  const normalized = normalizeAlertToken(value);
+  return allowed.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeAlertPrice(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  return Math.round(numeric * 100) / 100;
+}
+
+function normalizeAlertFilters(rawFilters = {}) {
+  return {
+    searchTerm: normalizeAlertText(rawFilters.searchTerm, 180),
+    locationFilter: normalizeAlertText(rawFilters.locationFilter, 180),
+    typeFilter: normalizeAlertEnum(rawFilters.typeFilter, ["all", "rent", "lease"], "all"),
+    bedroomFilter: normalizeAlertEnum(rawFilters.bedroomFilter, ["all", "studio", "1", "2", "3", "4plus"], "all"),
+    suitabilityFilter: normalizeAlertEnum(rawFilters.suitabilityFilter, ["all", "family", "single", "business", "luxury", "budget"], "all"),
+    popularityFilter: normalizeAlertEnum(rawFilters.popularityFilter, ["all", "popular"], "all"),
+    minPrice: normalizeAlertPrice(rawFilters.minPrice),
+    maxPrice: normalizeAlertPrice(rawFilters.maxPrice)
+  };
+}
+
+function getListingBedroomCount(item) {
+  const title = String(item?.title || "").toLowerCase();
+  if (title.includes("studio") || title.includes("bedsitter")) return 0;
+  const match = title.match(/(\d+)\s*bed/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getListingPopularityScore(item) {
+  const explicit = Number(item?.popularityScore);
+  if (Number.isFinite(explicit)) return explicit;
+  const price = Number(item?.price);
+  const normalizedPrice = Number.isFinite(price) ? price : 0;
+  const typeBoost = String(item?.type || "").toLowerCase() === "rent" ? 6 : 3;
+  const idFactor = Number(item?.id) % 9;
+  return Math.round((normalizedPrice / 10000) % 40) + typeBoost + idFactor;
+}
+
+function getListingSuitabilityTags(item) {
+  const title = String(item?.title || "").toLowerCase();
+  const description = String(item?.description || "").toLowerCase();
+  const location = String(item?.location || "").toLowerCase();
+  const type = String(item?.type || "").toLowerCase();
+  const price = Number(item?.price) || 0;
+  const text = `${title} ${description} ${location}`;
+  const tags = new Set();
+
+  if (type === "lease" || /(office|retail|warehouse|commercial)/.test(text)) {
+    tags.add("business");
+  } else {
+    tags.add("residential");
+  }
+  if (/(family|townhouse|villa|spacious|gated|garden)/.test(text) || (getListingBedroomCount(item) ?? 0) >= 3) {
+    tags.add("family");
+  }
+  if (/(studio|bedsitter|compact|student|young professional)/.test(text) || (getListingBedroomCount(item) ?? -1) <= 1) {
+    tags.add("single");
+  }
+  if (/(luxury|premium|modern|prime)/.test(text) || price >= 200000) {
+    tags.add("luxury");
+  }
+  if (/(affordable|budget|value)/.test(text) || (price > 0 && price <= 35000)) {
+    tags.add("budget");
+  }
+  return tags;
+}
+
+function doesAlertLocationMatch(itemLocation, selectedLocation) {
+  const locationText = normalizeAlertToken(itemLocation);
+  const selected = normalizeAlertToken(selectedLocation);
+  if (!selected || selected === "all") return true;
+  if (!locationText) return false;
+  if (locationText === selected || locationText.includes(selected)) return true;
+  const tokens = locationText
+    .split(/[,/|-]/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return tokens.includes(selected);
+}
+
+function matchesAlertBaseFilters(property, filters) {
+  if (!property || !isVisibleToPublic(property)) return false;
+  const q = normalizeAlertToken(filters.searchTerm);
+  const title = normalizeAlertToken(property.title);
+  const location = normalizeAlertToken(property.location);
+
+  if (q && !(title.includes(q) || location.includes(q))) return false;
+  if (!doesAlertLocationMatch(property.location, filters.locationFilter)) return false;
+  if (filters.typeFilter !== "all" && normalizeAlertToken(property.type) !== filters.typeFilter) return false;
+
+  if (filters.bedroomFilter !== "all") {
+    const count = getListingBedroomCount(property);
+    if (filters.bedroomFilter === "studio" && count !== 0) return false;
+    if (filters.bedroomFilter === "4plus" && !(count !== null && count >= 4)) return false;
+    if (!["studio", "4plus"].includes(filters.bedroomFilter) && count !== Number(filters.bedroomFilter)) return false;
+  }
+
+  if (filters.suitabilityFilter !== "all" && !getListingSuitabilityTags(property).has(filters.suitabilityFilter)) {
+    return false;
+  }
+
+  const numericPrice = Number(property.price);
+  const price = Number.isFinite(numericPrice) ? numericPrice : null;
+  if (filters.minPrice !== null && !(price !== null && price >= filters.minPrice)) return false;
+  if (filters.maxPrice !== null && !(price !== null && price <= filters.maxPrice)) return false;
+
+  return true;
+}
+
+function matchesAlertFilters(property, filters, listingPool) {
+  if (!matchesAlertBaseFilters(property, filters)) return false;
+  if (filters.popularityFilter !== "popular") return true;
+
+  const candidates = (Array.isArray(listingPool) ? listingPool : [])
+    .filter((item) => matchesAlertBaseFilters(item, filters));
+  if (candidates.length === 0) return false;
+
+  const scores = candidates.map((item) => getListingPopularityScore(item)).sort((a, b) => b - a);
+  const thresholdIndex = Math.max(0, Math.ceil(scores.length * 0.4) - 1);
+  const threshold = scores[thresholdIndex] ?? 0;
+  return getListingPopularityScore(property) >= threshold;
+}
+
+function buildAlertFilterSummary(filters) {
+  const parts = [];
+  if (filters.searchTerm) parts.push(`search "${filters.searchTerm}"`);
+  if (filters.locationFilter && normalizeAlertToken(filters.locationFilter) !== "all") parts.push(`location ${filters.locationFilter}`);
+  if (filters.typeFilter !== "all") parts.push(`type ${filters.typeFilter}`);
+  if (filters.bedroomFilter !== "all") parts.push(`bedrooms ${filters.bedroomFilter}`);
+  if (filters.suitabilityFilter !== "all") parts.push(`best for ${filters.suitabilityFilter}`);
+  if (filters.popularityFilter === "popular") parts.push("most popular");
+  if (filters.minPrice !== null || filters.maxPrice !== null) {
+    parts.push(`price ${filters.minPrice ?? 0} - ${filters.maxPrice ?? "any"}`);
+  }
+  return parts.join(", ");
+}
+
 function buildRestrictionContext(item) {
   return {
     isSoftDeleted: Boolean(item?.isSoftDeleted),
@@ -274,6 +431,233 @@ function buildRestrictionContext(item) {
 function getSessionUserId(req) {
   const userId = Number(req.session?.user?.id);
   return Number.isFinite(userId) && userId > 0 ? userId : null;
+}
+
+function buildViewerSessionKey(req) {
+  const sessionId = String(req.sessionID || "").trim();
+  const forwardedFor = String(req.headers?.["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  const ipAddress = forwardedFor || String(req.ip || "").trim();
+  const userAgent = String(req.headers?.["user-agent"] || "").trim();
+  const seed = `${sessionId}|${ipAddress}|${userAgent}`;
+  if (!seed.replace(/\|/g, "").trim()) return null;
+  return crypto.createHash("sha256").update(seed).digest("hex");
+}
+
+function emitListerMetricsUpdate(ownerUserId, propertyId, source) {
+  const listerUserId = Number(ownerUserId);
+  const normalizedPropertyId = Number(propertyId);
+  if (!Number.isFinite(listerUserId) || listerUserId <= 0) return;
+  if (!Number.isFinite(normalizedPropertyId) || normalizedPropertyId <= 0) return;
+  emitListingMetricsUpdated(listerUserId, {
+    listerUserId,
+    propertyId: normalizedPropertyId,
+    source: String(source || "unknown"),
+    occurredAt: new Date().toISOString()
+  });
+}
+
+async function trackPropertyViewEvent(req, property) {
+  const propertyId = Number(property?.id);
+  const ownerUserId = Number(property?.ownerId);
+  if (!Number.isFinite(propertyId) || propertyId <= 0) return false;
+  if (!Number.isFinite(ownerUserId) || ownerUserId <= 0) return false;
+
+  const sessionUser = req.session?.user || null;
+  const viewerUserId = getSessionUserId(req);
+  if (viewerUserId && viewerUserId === ownerUserId) return false;
+  if (String(sessionUser?.accountType || "").toLowerCase() === "admin") return false;
+
+  const sessionKey = buildViewerSessionKey(req);
+  if (!viewerUserId && !sessionKey) return false;
+
+  const forwardedFor = String(req.headers?.["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  const ipAddress = (forwardedFor || String(req.ip || "").trim()).slice(0, 64) || null;
+  const userAgent = String(req.headers?.["user-agent"] || "").trim().slice(0, 255) || null;
+
+  try {
+    if (viewerUserId) {
+      const [insertResult] = await pool.execute(
+        `
+          INSERT INTO listing_view_events (
+            property_id,
+            owner_user_id,
+            viewer_user_id,
+            viewer_session_key,
+            ip_address,
+            user_agent,
+            viewed_at
+          )
+          SELECT ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+          FROM DUAL
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM listing_view_events
+            WHERE property_id = ?
+              AND viewer_user_id = ?
+              AND viewed_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL ${VIEW_DEDUP_WINDOW_MINUTES} MINUTE)
+          )
+        `,
+        [
+          propertyId,
+          ownerUserId,
+          viewerUserId,
+          sessionKey,
+          ipAddress,
+          userAgent,
+          propertyId,
+          viewerUserId
+        ]
+      );
+      return Number(insertResult?.affectedRows || 0) > 0;
+    }
+
+    const [insertResult] = await pool.execute(
+      `
+        INSERT INTO listing_view_events (
+          property_id,
+          owner_user_id,
+          viewer_user_id,
+          viewer_session_key,
+          ip_address,
+          user_agent,
+          viewed_at
+        )
+        SELECT ?, ?, NULL, ?, ?, ?, CURRENT_TIMESTAMP
+        FROM DUAL
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM listing_view_events
+          WHERE property_id = ?
+            AND viewer_session_key = ?
+            AND viewed_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL ${VIEW_DEDUP_WINDOW_MINUTES} MINUTE)
+        )
+      `,
+      [
+        propertyId,
+        ownerUserId,
+        sessionKey,
+        ipAddress,
+        userAgent,
+        propertyId,
+        sessionKey
+      ]
+    );
+    return Number(insertResult?.affectedRows || 0) > 0;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function mapAlertPreferenceRow(row) {
+  if (!row) {
+    return {
+      enabled: false,
+      filters: normalizeAlertFilters({})
+    };
+  }
+  return {
+    enabled: Boolean(row.isEnabled),
+    filters: normalizeAlertFilters({
+      searchTerm: row.searchTerm,
+      locationFilter: row.locationFilter,
+      typeFilter: row.typeFilter,
+      bedroomFilter: row.bedroomFilter,
+      suitabilityFilter: row.suitabilityFilter,
+      popularityFilter: row.popularityFilter,
+      minPrice: row.minPrice,
+      maxPrice: row.maxPrice
+    })
+  };
+}
+
+async function loadUserAlertPreference(userId) {
+  const [rows] = await pool.execute(
+    `
+      SELECT
+        is_enabled AS isEnabled,
+        search_term AS searchTerm,
+        location_filter AS locationFilter,
+        type_filter AS typeFilter,
+        bedroom_filter AS bedroomFilter,
+        suitability_filter AS suitabilityFilter,
+        popularity_filter AS popularityFilter,
+        min_price AS minPrice,
+        max_price AS maxPrice
+      FROM property_alert_preferences
+      WHERE user_id = ?
+      LIMIT 1
+    `,
+    [Number(userId)]
+  );
+  return mapAlertPreferenceRow(rows[0] || null);
+}
+
+async function dispatchNewPropertyAlerts(newProperty) {
+  if (!isVisibleToPublic(newProperty)) return;
+
+  const [rows] = await pool.execute(
+    `
+      SELECT
+        pap.user_id AS userId,
+        pap.search_term AS searchTerm,
+        pap.location_filter AS locationFilter,
+        pap.type_filter AS typeFilter,
+        pap.bedroom_filter AS bedroomFilter,
+        pap.suitability_filter AS suitabilityFilter,
+        pap.popularity_filter AS popularityFilter,
+        pap.min_price AS minPrice,
+        pap.max_price AS maxPrice,
+        u.full_name AS fullName,
+        u.email AS email
+      FROM property_alert_preferences pap
+      INNER JOIN users u ON u.id = pap.user_id
+      WHERE pap.is_enabled = 1
+        AND u.email IS NOT NULL
+        AND u.email_verified = 1
+        AND u.id <> ?
+    `,
+    [Number(newProperty.ownerId || 0)]
+  );
+
+  if (!rows.length) return;
+
+  const appFrontendUrl = String(process.env.APP_FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
+  const listingUrl = `${appFrontendUrl}/listings/${newProperty.id}`;
+  const publicListings = properties.filter((item) => isVisibleToPublic(item));
+  const sendJobs = rows
+    .map((row) => {
+      const filters = normalizeAlertFilters({
+        searchTerm: row.searchTerm,
+        locationFilter: row.locationFilter,
+        typeFilter: row.typeFilter,
+        bedroomFilter: row.bedroomFilter,
+        suitabilityFilter: row.suitabilityFilter,
+        popularityFilter: row.popularityFilter,
+        minPrice: row.minPrice,
+        maxPrice: row.maxPrice
+      });
+      if (!matchesAlertFilters(newProperty, filters, publicListings)) {
+        return null;
+      }
+      return sendNewMatchingListingAlertEmail({
+        toEmail: row.email,
+        fullName: row.fullName,
+        listingTitle: newProperty.title,
+        listingLocation: newProperty.location,
+        listingType: newProperty.type,
+        listingPrice: newProperty.price,
+        listingUrl,
+        filterSummary: buildAlertFilterSummary(filters)
+      });
+    })
+    .filter(Boolean);
+
+  if (!sendJobs.length) return;
+  await Promise.allSettled(sendJobs);
 }
 
 function buildUploadedFileUrl(req, file) {
@@ -499,7 +883,7 @@ async function buildPricingPreviewSafe(listingType, propertyValue) {
 const getAllProperties = (req, res) => {
   enforceListingExpiryAcrossAll();
   const includeDeleted = isTruthyFlag(req.query?.includeDeleted);
-  const isAdmin = req.session?.user?.accountType === "admin";
+  const isAdmin = hasModulePermission(req.session?.user, MODULE_KEYS.PROPERTY_MODERATION, ACCESS_ACTIONS.VIEW);
   if (includeDeleted && isAdmin) {
     return res.status(200).json(properties.map((item) => ensurePropertyPaymentState(item)));
   }
@@ -533,7 +917,7 @@ const getMyProperties = (req, res) => {
   return res.status(200).json(data);
 };
 
-const getPropertyById = (req, res) => {
+const getPropertyById = async (req, res) => {
   enforceListingExpiryAcrossAll();
   const id = Number(req.params.id);
   const property = properties.find((item) => item.id === id);
@@ -542,11 +926,15 @@ const getPropertyById = (req, res) => {
   }
   const sessionUser = req.session?.user;
   const canViewDraft = sessionUser && canAccessListing(sessionUser, property);
-  if (isSoftDeleted(property) && req.session?.user?.accountType !== "admin") {
+  if (isSoftDeleted(property) && !hasModulePermission(req.session?.user, MODULE_KEYS.PROPERTY_MODERATION, ACCESS_ACTIONS.VIEW)) {
     return res.status(404).json({ message: "Property not found" });
   }
   if (!isPublishedListing(property) && !canViewDraft) {
     return res.status(404).json({ message: "Property not found" });
+  }
+  const viewTracked = await trackPropertyViewEvent(req, property);
+  if (viewTracked) {
+    emitListerMetricsUpdate(property.ownerId, property.id, "listing_viewed");
   }
   return res.status(200).json(ensurePropertyPaymentState(property));
 };
@@ -697,6 +1085,9 @@ const createProperty = async (req, res) => {
 
   properties.push(createdProperty);
   await syncPropertyToDatabase(createdProperty);
+  void dispatchNewPropertyAlerts(createdProperty).catch((error) => {
+    console.error("listing-alert-dispatch-failed:", error.message);
+  });
 
   return res.status(201).json({
     message: wantsPrePublishPremium
@@ -1152,6 +1543,78 @@ const submitPropertyInquiry = (req, res) => {
   return createListingInquiryConversation(req, res);
 };
 
+const getMyPropertyAlertPreference = async (req, res) => {
+  const userId = getSessionUserId(req);
+  if (!userId) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+
+  try {
+    const preference = await loadUserAlertPreference(userId);
+    return res.status(200).json(preference);
+  } catch (_error) {
+    return res.status(500).json({ message: "Could not load listing alert preference right now." });
+  }
+};
+
+const upsertMyPropertyAlertPreference = async (req, res) => {
+  const userId = getSessionUserId(req);
+  if (!userId) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+
+  const enabled = Boolean(req.body?.enabled);
+  const filters = normalizeAlertFilters(req.body?.filters || {});
+  try {
+    await pool.execute(
+      `
+        INSERT INTO property_alert_preferences (
+          user_id,
+          is_enabled,
+          search_term,
+          location_filter,
+          type_filter,
+          bedroom_filter,
+          suitability_filter,
+          popularity_filter,
+          min_price,
+          max_price
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          is_enabled = VALUES(is_enabled),
+          search_term = VALUES(search_term),
+          location_filter = VALUES(location_filter),
+          type_filter = VALUES(type_filter),
+          bedroom_filter = VALUES(bedroom_filter),
+          suitability_filter = VALUES(suitability_filter),
+          popularity_filter = VALUES(popularity_filter),
+          min_price = VALUES(min_price),
+          max_price = VALUES(max_price)
+      `,
+      [
+        Number(userId),
+        enabled ? 1 : 0,
+        filters.searchTerm || null,
+        filters.locationFilter || null,
+        filters.typeFilter,
+        filters.bedroomFilter,
+        filters.suitabilityFilter,
+        filters.popularityFilter,
+        filters.minPrice,
+        filters.maxPrice
+      ]
+    );
+
+    return res.status(200).json({
+      enabled,
+      filters
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Could not save listing alert preference right now." });
+  }
+};
+
 const getShortlistedProperties = async (req, res) => {
   enforceListingExpiryAcrossAll();
   const userId = getSessionUserId(req);
@@ -1191,6 +1654,153 @@ const getShortlistedProperties = async (req, res) => {
   }
 };
 
+const getMyListingEngagement = async (req, res) => {
+  enforceListingExpiryAcrossAll();
+  const sessionUser = req.session?.user;
+  if (!sessionUser) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+
+  const accountType = String(sessionUser.accountType || "").toLowerCase();
+  if (accountType !== "lister" && accountType !== "admin") {
+    return res.status(403).json({ message: "Only lister or admin accounts can view engagement analytics." });
+  }
+
+  const ownerUserId = Number(sessionUser.id);
+  if (!Number.isFinite(ownerUserId) || ownerUserId <= 0) {
+    return res.status(400).json({ message: "Invalid session user." });
+  }
+
+  const ownedProperties = properties
+    .filter((item) => Number(item.ownerId) === ownerUserId && !isSoftDeleted(item))
+    .map((item) => ensurePropertyPaymentState(item));
+  const propertyIds = ownedProperties
+    .map((item) => Number(item.id))
+    .filter((value) => Number.isFinite(value) && value > 0);
+
+  if (propertyIds.length === 0) {
+    return res.status(200).json({
+      totals: {
+        views: 0,
+        interestedShortlist: 0,
+        interestedInquiry: 0,
+        reachedOut: 0
+      },
+      listings: [],
+      generatedAt: new Date().toISOString()
+    });
+  }
+
+  const inClause = propertyIds.map(() => "?").join(", ");
+  const viewsByPropertyId = new Map();
+  const shortlistByPropertyId = new Map();
+  const inquiryByPropertyId = new Map();
+  const reachedOutByPropertyId = new Map();
+
+  try {
+    const [viewRows] = await pool.execute(
+      `
+        SELECT
+          property_id AS propertyId,
+          COUNT(*) AS viewCount
+        FROM listing_view_events
+        WHERE owner_user_id = ?
+          AND property_id IN (${inClause})
+        GROUP BY property_id
+      `,
+      [ownerUserId, ...propertyIds]
+    );
+    viewRows.forEach((row) => {
+      viewsByPropertyId.set(Number(row.propertyId), Number(row.viewCount || 0));
+    });
+
+    const [shortlistRows] = await pool.execute(
+      `
+        SELECT
+          property_id AS propertyId,
+          COUNT(DISTINCT user_id) AS interestedShortlist
+        FROM property_shortlists
+        WHERE property_id IN (${inClause})
+          AND user_id <> ?
+        GROUP BY property_id
+      `,
+      [...propertyIds, ownerUserId]
+    );
+    shortlistRows.forEach((row) => {
+      shortlistByPropertyId.set(Number(row.propertyId), Number(row.interestedShortlist || 0));
+    });
+
+    const [inquiryRows] = await pool.execute(
+      `
+        SELECT
+          property_id AS propertyId,
+          COUNT(DISTINCT viewer_user_id) AS interestedInquiry
+        FROM listing_conversations
+        WHERE lister_user_id = ?
+          AND property_id IN (${inClause})
+        GROUP BY property_id
+      `,
+      [ownerUserId, ...propertyIds]
+    );
+    inquiryRows.forEach((row) => {
+      inquiryByPropertyId.set(Number(row.propertyId), Number(row.interestedInquiry || 0));
+    });
+
+    const [reachedOutRows] = await pool.execute(
+      `
+        SELECT
+          c.property_id AS propertyId,
+          COUNT(DISTINCT lm.sender_user_id) AS reachedOut
+        FROM listing_conversations c
+        INNER JOIN listing_messages lm
+          ON lm.conversation_id = c.id
+          AND lm.sender_user_id = c.viewer_user_id
+        WHERE c.lister_user_id = ?
+          AND c.property_id IN (${inClause})
+        GROUP BY c.property_id
+      `,
+      [ownerUserId, ...propertyIds]
+    );
+    reachedOutRows.forEach((row) => {
+      reachedOutByPropertyId.set(Number(row.propertyId), Number(row.reachedOut || 0));
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Could not load listing engagement right now." });
+  }
+
+  const listings = ownedProperties.map((item) => {
+    const propertyId = Number(item.id);
+    return {
+      propertyId,
+      title: item.title,
+      location: item.location,
+      listingStatus: getListingStatus(item),
+      views: viewsByPropertyId.get(propertyId) || 0,
+      interestedShortlist: shortlistByPropertyId.get(propertyId) || 0,
+      interestedInquiry: inquiryByPropertyId.get(propertyId) || 0,
+      reachedOut: reachedOutByPropertyId.get(propertyId) || 0
+    };
+  });
+
+  const totals = listings.reduce((acc, item) => ({
+    views: acc.views + Number(item.views || 0),
+    interestedShortlist: acc.interestedShortlist + Number(item.interestedShortlist || 0),
+    interestedInquiry: acc.interestedInquiry + Number(item.interestedInquiry || 0),
+    reachedOut: acc.reachedOut + Number(item.reachedOut || 0)
+  }), {
+    views: 0,
+    interestedShortlist: 0,
+    interestedInquiry: 0,
+    reachedOut: 0
+  });
+
+  return res.status(200).json({
+    totals,
+    listings,
+    generatedAt: new Date().toISOString()
+  });
+};
+
 const addPropertyToShortlist = async (req, res) => {
   enforceListingExpiryAcrossAll();
   const userId = getSessionUserId(req);
@@ -1207,7 +1817,7 @@ const addPropertyToShortlist = async (req, res) => {
   if (!property) {
     return res.status(404).json({ message: "Property not found." });
   }
-  if ((!isVisibleToPublic(property)) && req.session?.user?.accountType !== "admin") {
+  if ((!isVisibleToPublic(property)) && !hasModulePermission(req.session?.user, MODULE_KEYS.PROPERTY_MODERATION, ACCESS_ACTIONS.VIEW)) {
     return res.status(404).json({ message: "Property not found." });
   }
 
@@ -1219,6 +1829,9 @@ const addPropertyToShortlist = async (req, res) => {
       `,
       [userId, propertyId]
     );
+    if (Number(property.ownerId) !== Number(userId)) {
+      emitListerMetricsUpdate(property.ownerId, propertyId, "shortlist_added");
+    }
     return res.status(200).json({ message: "Property added to shortlist." });
   } catch (_error) {
     return res.status(500).json({ message: "Could not update shortlist right now." });
@@ -1244,6 +1857,10 @@ const removePropertyFromShortlist = async (req, res) => {
       `,
       [userId, propertyId]
     );
+    const property = properties.find((item) => Number(item.id) === propertyId);
+    if (property && Number(property.ownerId) !== Number(userId)) {
+      emitListerMetricsUpdate(property.ownerId, propertyId, "shortlist_removed");
+    }
     return res.status(200).json({ message: "Property removed from shortlist." });
   } catch (_error) {
     return res.status(500).json({ message: "Could not update shortlist right now." });
@@ -1255,8 +1872,8 @@ const softDeleteProperty = (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can moderate listings" });
+  if (!hasModulePermission(sessionUser, MODULE_KEYS.PROPERTY_MODERATION, ACCESS_ACTIONS.MANAGE)) {
+    return res.status(403).json({ message: "You do not have permission to moderate listings." });
   }
 
   const propertyId = Number(req.params.id);
@@ -1308,8 +1925,8 @@ const restoreSoftDeletedProperty = (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can moderate listings" });
+  if (!hasModulePermission(sessionUser, MODULE_KEYS.PROPERTY_MODERATION, ACCESS_ACTIONS.MANAGE)) {
+    return res.status(403).json({ message: "You do not have permission to moderate listings." });
   }
 
   const propertyId = Number(req.params.id);
@@ -1346,7 +1963,10 @@ module.exports = {
   createListingPaymentCheckout,
   applySuccessfulPaymentByReference,
   submitPropertyInquiry,
+  getMyPropertyAlertPreference,
+  upsertMyPropertyAlertPreference,
   getShortlistedProperties,
+  getMyListingEngagement,
   addPropertyToShortlist,
   removePropertyFromShortlist,
   softDeleteProperty,
