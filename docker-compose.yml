@@ -24,6 +24,8 @@ services:
       dockerfile: Dockerfile
     container_name: realestate-backend
     restart: unless-stopped
+    env_file:
+      - ./RealEstateBackend/.env.example
     depends_on:
       mysql:
         condition: service_healthy

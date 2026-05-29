@@ -1,6 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getProperties } from "../services/propertyService";
+import {
+  getProperties,
+  getPropertyAlertPreference,
+  updatePropertyAlertPreference
+} from "../services/propertyService";
 import { logoutAccount } from "../services/authService";
 import { useShortlist } from "../hooks/useShortlist";
 import {
@@ -16,6 +20,7 @@ import {
 } from "../utils/propertyMedia";
 import { setStoredBrowseFilters } from "../utils/recommendationFilters";
 import PropertyMediaBadge from "../components/PropertyMediaBadge";
+import { getCountryLocations, resolveUserCountryCode } from "../utils/locationCatalog";
 
 const LISTINGS_PER_PAGE = 9;
 const ALLOWED_TYPES = new Set(["all", "rent", "lease"]);
@@ -37,6 +42,47 @@ function getPropertyFeatures(id) {
 
 function isPaidListing(item) {
   return String(item?.paymentStatus || "").toLowerCase() === "paid";
+}
+
+function normalizeAlertPayloadFilters(filters = {}) {
+  return {
+    searchTerm: String(filters.searchTerm || "").trim(),
+    locationFilter: String(filters.locationFilter || "all").trim() || "all",
+    typeFilter: String(filters.typeFilter || "all").trim().toLowerCase() || "all",
+    bedroomFilter: String(filters.bedroomFilter || "all").trim().toLowerCase() || "all",
+    suitabilityFilter: String(filters.suitabilityFilter || "all").trim().toLowerCase() || "all",
+    popularityFilter: String(filters.popularityFilter || "all").trim().toLowerCase() || "all",
+    minPrice: String(filters.minPrice || "").trim(),
+    maxPrice: String(filters.maxPrice || "").trim()
+  };
+}
+
+function areAlertFiltersEqual(left = {}, right = {}) {
+  const l = normalizeAlertPayloadFilters(left);
+  const r = normalizeAlertPayloadFilters(right);
+  return (
+    l.searchTerm === r.searchTerm &&
+    l.locationFilter === r.locationFilter &&
+    l.typeFilter === r.typeFilter &&
+    l.bedroomFilter === r.bedroomFilter &&
+    l.suitabilityFilter === r.suitabilityFilter &&
+    l.popularityFilter === r.popularityFilter &&
+    l.minPrice === r.minPrice &&
+    l.maxPrice === r.maxPrice
+  );
+}
+
+function uniqueLocationsCaseInsensitive(values) {
+  const seen = new Map();
+  values.forEach((value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (!seen.has(key)) {
+      seen.set(key, normalized);
+    }
+  });
+  return Array.from(seen.values());
 }
 
 function parseInitialFilters() {
@@ -71,6 +117,9 @@ function BrowseListingsPage() {
   const [maxPrice, setMaxPrice] = useState(initial.maxPrice);
   const [sortBy, setSortBy] = useState(initial.sortBy);
   const [currentPage, setCurrentPage] = useState(initial.currentPage);
+  const [alertPreference, setAlertPreference] = useState(null);
+  const [isLoadingAlertPreference, setIsLoadingAlertPreference] = useState(false);
+  const [isSavingAlertPreference, setIsSavingAlertPreference] = useState(false);
 
   const { shortlistedIds, shortlistedLookup, toggleShortlist } = useShortlist();
 
@@ -135,18 +184,45 @@ function BrowseListingsPage() {
     });
   }, [searchTerm, propertyType, location, maxPrice]);
 
-  const availableLocations = useMemo(() => {
-    const seen = new Map();
-    properties.forEach((item) => {
-      const raw = String(item?.location || "").trim();
-      if (!raw) return;
-      const firstSegment = raw.split(",")[0]?.trim() || raw;
-      if (firstSegment && !seen.has(firstSegment.toLowerCase())) {
-        seen.set(firstSegment.toLowerCase(), firstSegment);
+  useEffect(() => {
+    if (!loggedInUser?.id) {
+      setAlertPreference(null);
+      return;
+    }
+    let active = true;
+    const loadAlertPreference = async () => {
+      setIsLoadingAlertPreference(true);
+      try {
+        const response = await getPropertyAlertPreference();
+        if (!active) return;
+        setAlertPreference({
+          enabled: Boolean(response?.enabled),
+          filters: normalizeAlertPayloadFilters(response?.filters || {})
+        });
+      } catch (_error) {
+        if (!active) return;
+        setAlertPreference(null);
+      } finally {
+        if (active) setIsLoadingAlertPreference(false);
       }
+    };
+    void loadAlertPreference();
+    return () => {
+      active = false;
+    };
+  }, [loggedInUser?.id]);
+
+  const availableLocations = useMemo(() => {
+    const dynamicLocations = properties.map((item) => {
+      const raw = String(item?.location || "").trim();
+      if (!raw) return "";
+      return raw.split(",")[0]?.trim() || raw;
     });
-    return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
-  }, [properties]);
+    const countryCode = resolveUserCountryCode(loggedInUser);
+    const countryLocations = getCountryLocations(countryCode);
+    return uniqueLocationsCaseInsensitive([...countryLocations, ...dynamicLocations])
+      .sort((a, b) => a.localeCompare(b));
+  }, [properties, loggedInUser]);
 
   const filteredProperties = useMemo(() => {
     const needle = searchTerm.trim().toLowerCase();
@@ -228,6 +304,41 @@ function BrowseListingsPage() {
     setSortBy("default");
     setCurrentPage(1);
   }, []);
+
+  const currentAlertFilters = useMemo(() => normalizeAlertPayloadFilters({
+    searchTerm,
+    locationFilter: location,
+    typeFilter: propertyType,
+    maxPrice
+  }), [searchTerm, location, propertyType, maxPrice]);
+
+  const isCurrentFilterAlertEnabled = useMemo(() => {
+    if (!alertPreference?.enabled) return false;
+    return areAlertFiltersEqual(alertPreference.filters, currentAlertFilters);
+  }, [alertPreference, currentAlertFilters]);
+
+  const handleToggleFilterAlert = async (nextEnabled) => {
+    if (!loggedInUser?.id) {
+      notify("Please log in to manage listing alerts.", "warning");
+      return;
+    }
+    setIsSavingAlertPreference(true);
+    try {
+      const response = await updatePropertyAlertPreference({
+        enabled: Boolean(nextEnabled),
+        filters: currentAlertFilters
+      });
+      setAlertPreference({
+        enabled: Boolean(response?.enabled),
+        filters: normalizeAlertPayloadFilters(response?.filters || currentAlertFilters)
+      });
+      notify(nextEnabled ? "Listing alert enabled." : "Listing alert disabled.", "success");
+    } catch (error) {
+      notify(error.message || "Could not update listing alert preference.", "danger");
+    } finally {
+      setIsSavingAlertPreference(false);
+    }
+  };
 
   const handleLogout = async () => {
     try {
@@ -470,6 +581,31 @@ function BrowseListingsPage() {
                 </button>
               </div>
             </div>
+            {loggedInUser && (
+              <div className={`kr-listing-alert-toolbar-pill${isCurrentFilterAlertEnabled ? " is-active" : ""}`}>
+                <span className="kr-listing-alert-toolbar-dot" aria-hidden="true" />
+                <span className="kr-listing-alert-toolbar-icon" aria-hidden="true">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                  </svg>
+                </span>
+                <span className="kr-listing-alert-toolbar-label">
+                  Alerts {isCurrentFilterAlertEnabled ? "ON" : "OFF"}
+                </span>
+                <span className="kr-listing-alert-toolbar-hint" title="Alerts are sent only for newly uploaded listings that match your saved filters.">
+                  New uploads only
+                </span>
+                <button
+                  type="button"
+                  className="kr-listing-alert-toolbar-action"
+                  onClick={() => handleToggleFilterAlert(!isCurrentFilterAlertEnabled)}
+                  disabled={isLoadingAlertPreference || isSavingAlertPreference}
+                >
+                  {isCurrentFilterAlertEnabled ? "Clear" : "Set alert"}
+                </button>
+              </div>
+            )}
           </div>
 
           {loading && (

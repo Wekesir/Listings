@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import PortalLayout from "../components/PortalLayout";
 import {
+  getAdminConversationMessages,
+  getAdminConversations,
   getConversationMessages,
   getMyConversations,
   markConversationAsRead,
@@ -11,6 +13,7 @@ import { getRealtimeSocket } from "../services/realtimeSocket";
 import { playIncomingMessageTone } from "../utils/messageTone";
 import { notify } from "../utils/notify";
 import { getStoredUser } from "../utils/session";
+import { ACCESS_ACTIONS, MODULE_KEYS, canAccessModule } from "../utils/accessControl";
 import {
   getStoredPreferences,
   isIncomingMessageToneEnabled,
@@ -112,30 +115,39 @@ function SendIcon() {
   );
 }
 
+const ROLE_COLORS = { admin: "#7c3aed", lister: "#065f46", viewer: "#1e3a5f", employee: "#7c3aed" };
+
 /* ── main page ── */
-function MessagesPage() {
+function MessagesPage({ forceOversightMode = false }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const currentUser = getStoredUser();
   const currentUserId = Number(currentUser?.id) || null;
+  const canViewConversationOversight = canAccessModule(
+    currentUser,
+    MODULE_KEYS.ADMIN_MESSAGES,
+    ACCESS_ACTIONS.VIEW
+  );
+  const isOversightMode = Boolean(forceOversightMode || canViewConversationOversight);
 
   const [conversations, setConversations] = useState([]);
   const [loadingConversations, setLoadingConversations] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [messages, setMessages] = useState([]);
+  const [search, setSearch] = useState(searchParams.get("q") || "");
   const [messageText, setMessageText] = useState("");
   const [sending, setSending] = useState(false);
   const [toneEnabled, setToneEnabled] = useState(() => isIncomingMessageToneEnabled());
   const [socketConnected, setSocketConnected] = useState(false);
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
 
   const selectedConversationIdRef = useRef(null);
   const threadEndRef = useRef(null);
   const textareaRef = useRef(null);
 
   const selectedConversationId = Number(searchParams.get("conversation")) || null;
-  const selectedConversation = useMemo(
-    () => conversations.find((c) => Number(c.id) === selectedConversationId) || null,
-    [conversations, selectedConversationId]
-  );
+  const selectedConversation = useMemo(() => {
+    return conversations.find((c) => Number(c.id) === selectedConversationId) || null;
+  }, [conversations, selectedConversationId]);
 
   /* keep ref in sync */
   useEffect(() => {
@@ -153,7 +165,9 @@ function MessagesPage() {
   const loadConversations = useCallback(async () => {
     setLoadingConversations(true);
     try {
-      const res = await getMyConversations({ limit: 50 });
+      const res = isOversightMode
+        ? await getAdminConversations({ search: search.trim(), limit: 100 })
+        : await getMyConversations({ limit: 50 });
       const data = Array.isArray(res?.data) ? res.data : [];
       setConversations(data);
       if (data.length > 0) {
@@ -166,26 +180,34 @@ function MessagesPage() {
         }
       }
     } catch (err) {
-      notify(err.message || "Could not load conversations.", "warning");
+      notify(
+        err.message || (isOversightMode ? "Could not load conversation logs." : "Could not load conversations."),
+        "warning"
+      );
     } finally {
       setLoadingConversations(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isOversightMode, search]);
 
   const loadMessages = useCallback(async (conversationId) => {
     if (!conversationId) { setMessages([]); return; }
     setLoadingMessages(true);
     try {
-      const res = await getConversationMessages(conversationId, { limit: 200 });
+      const res = isOversightMode
+        ? await getAdminConversationMessages(conversationId, { limit: 500 })
+        : await getConversationMessages(conversationId, { limit: 200 });
       setMessages(Array.isArray(res?.data) ? res.data : []);
-      await markConversationAsRead(conversationId);
+      if (!isOversightMode) {
+        await markConversationAsRead(conversationId);
+        window.dispatchEvent(new CustomEvent("messages:badge-refresh"));
+      }
     } catch (err) {
       notify(err.message || "Could not load messages.", "warning");
     } finally {
       setLoadingMessages(false);
     }
-  }, []);
+  }, [isOversightMode]);
 
   useEffect(() => { loadConversations(); }, [loadConversations]);
   useEffect(() => {
@@ -217,7 +239,9 @@ function MessagesPage() {
           lastMessagePreview: payload?.lastMessagePreview ?? cur.lastMessagePreview,
           lastMessageAt: payload?.lastMessageAt ?? cur.lastMessageAt,
           lastMessageSenderId: payload?.lastMessageSenderId ?? cur.lastMessageSenderId,
-          unreadCount:
+          unreadCount: isOversightMode
+            ? cur.unreadCount
+            :
             Number(payload?.lastMessageSenderId) !== Number(currentUserId)
               ? Number(cur.unreadCount || 0) + 1
               : cur.unreadCount
@@ -234,6 +258,17 @@ function MessagesPage() {
       if (selId === convId) {
         setMessages((prev) => {
           if (prev.some((m) => Number(m.id) === Number(incoming.id))) return prev;
+          if (isOversightMode) {
+            return [...prev, {
+              id: Number(incoming.id),
+              conversationId: convId,
+              senderUserId: Number(incoming.senderUserId),
+              senderFullName: incoming.senderFullName || "User",
+              senderAccountType: incoming.senderAccountType || "viewer",
+              messageText: incoming.messageText,
+              createdAt: incoming.createdAt
+            }];
+          }
           return [...prev, {
             id: Number(incoming.id),
             conversationId: convId,
@@ -244,35 +279,44 @@ function MessagesPage() {
             isOwnMessage: Number(incoming.senderUserId) === currentUserId
           }];
         });
-        if (Number(incoming.senderUserId) !== currentUserId) {
+        if (!isOversightMode && Number(incoming.senderUserId) !== currentUserId) {
           await markConversationAsRead(convId);
+          window.dispatchEvent(new CustomEvent("messages:badge-refresh"));
         }
       }
-      if (Number(incoming.senderUserId) !== currentUserId) {
+      if (isOversightMode || Number(incoming.senderUserId) !== currentUserId) {
         if (isIncomingMessageToneEnabled()) playIncomingMessageTone();
-        notify("New message received.", "info");
+        notify(isOversightMode ? "New message in monitored conversations." : "New message received.", "info");
       }
     };
 
-    socket.on("messages:conversation-updated", onConversationUpdated);
-    socket.on("messages:new-message", onNewMessage);
+    const convUpdateEvent = isOversightMode ? "admin:conversation-updated" : "messages:conversation-updated";
+    const newMessageEvent = isOversightMode ? "admin:new-message" : "messages:new-message";
+    socket.on(convUpdateEvent, onConversationUpdated);
+    socket.on(newMessageEvent, onNewMessage);
     return () => {
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
-      socket.off("messages:conversation-updated", onConversationUpdated);
-      socket.off("messages:new-message", onNewMessage);
+      socket.off(convUpdateEvent, onConversationUpdated);
+      socket.off(newMessageEvent, onNewMessage);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId]);
+  }, [currentUserId, isOversightMode]);
 
   /* ── actions ── */
   const handleSelectConversation = (id) => {
     const next = new URLSearchParams(searchParams);
     next.set("conversation", String(id));
     setSearchParams(next, { replace: false });
+    setIsMobileChatOpen(true);
+  };
+
+  const handleMobileBack = () => {
+    setIsMobileChatOpen(false);
   };
 
   const handleSendMessage = async () => {
+    if (isOversightMode) return;
     const trimmed = String(messageText || "").trim();
     if (trimmed.length < 2) { notify("Please type at least 2 characters.", "warning"); return; }
     if (!selectedConversationId) { notify("Pick a conversation first.", "warning"); return; }
@@ -303,15 +347,31 @@ function MessagesPage() {
     notify(next ? "Message tone enabled." : "Message tone muted.", "info");
   };
 
+  const handleApplySearch = () => {
+    if (!isOversightMode) return;
+    const next = new URLSearchParams(searchParams);
+    if (search.trim()) next.set("q", search.trim());
+    else next.delete("q");
+    setSearchParams(next, { replace: true });
+    loadConversations();
+  };
+
   return (
-    <PortalLayout title="Messages" subtitle="Private conversations about your listings.">
-      <div className="kr-msg-shell">
+    <PortalLayout
+      title={isOversightMode ? "Conversation Oversight" : "Messages"}
+      subtitle={
+        isOversightMode
+          ? "Read-only view of private conversations between listers and viewers."
+          : "Private conversations about your listings."
+      }
+    >
+      <div className={`kr-msg-shell${isMobileChatOpen ? " is-mobile-chat-open" : ""}`}>
 
         {/* ── sidebar ── */}
         <aside className="kr-msg-sidebar">
           <div className="kr-msg-sidebar-header">
             <div className="kr-msg-sidebar-title-row">
-              <span className="kr-msg-sidebar-title">Conversations</span>
+              <span className="kr-msg-sidebar-title">{isOversightMode ? "All Conversations" : "Conversations"}</span>
               <div className="kr-msg-sidebar-actions">
                 <button
                   type="button"
@@ -358,6 +418,23 @@ function MessagesPage() {
               <span className={`kr-msg-ws-dot ${socketConnected ? "connected" : "disconnected"}`} />
               <span>{socketConnected ? "Live" : "Connecting…"}</span>
             </div>
+            {isOversightMode && (
+              <div className="kr-msg-search-row">
+                <input
+                  type="search"
+                  className="kr-msg-search-input"
+                  placeholder="Search name, email, or listing…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleApplySearch(); }}
+                />
+                <button type="button" className="kr-msg-search-btn" onClick={handleApplySearch}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="kr-msg-conv-list">
@@ -366,11 +443,21 @@ function MessagesPage() {
                 {[1, 2, 3].map((i) => <div key={i} className="kr-msg-list-skeleton" />)}
               </div>
             ) : conversations.length === 0 ? (
-              <EmptyConversations />
+              isOversightMode ? (
+                <div className="kr-msg-zero">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                  <p>No results</p>
+                  <span>No conversations match your search.</span>
+                </div>
+              ) : (
+                <EmptyConversations />
+              )
             ) : (
               conversations.map((item) => {
                 const active = Number(item.id) === selectedConversationId;
-                const hasUnread = Number(item.unreadCount || 0) > 0;
+                const hasUnread = !isOversightMode && Number(item.unreadCount || 0) > 0;
                 return (
                   <button
                     key={item.id}
@@ -378,10 +465,21 @@ function MessagesPage() {
                     className={`kr-msg-conv-item ${active ? "active" : ""} ${hasUnread ? "has-unread" : ""}`}
                     onClick={() => handleSelectConversation(item.id)}
                   >
-                    <Avatar name={item.otherUser?.fullName} />
+                    {isOversightMode ? (
+                      <div className="kr-msg-conv-avatars">
+                        <Avatar name={item.viewer?.fullName} size={28} />
+                        <Avatar name={item.lister?.fullName} size={28} />
+                      </div>
+                    ) : (
+                      <Avatar name={item.otherUser?.fullName} />
+                    )}
                     <div className="kr-msg-conv-body">
                       <div className="kr-msg-conv-row">
-                        <span className="kr-msg-conv-name">{item.otherUser?.fullName || "User"}</span>
+                        <span className="kr-msg-conv-name">
+                          {isOversightMode
+                            ? `${item.viewer?.fullName} ↔ ${item.lister?.fullName}`
+                            : (item.otherUser?.fullName || "User")}
+                        </span>
                         <span className="kr-msg-conv-time">{formatTime(item.lastMessageAt)}</span>
                       </div>
                       <p className="kr-msg-conv-listing">{item.listing?.title || `Listing #${item.propertyId}`}</p>
@@ -411,16 +509,57 @@ function MessagesPage() {
             <>
               {/* chat header */}
               <div className="kr-msg-chat-header">
-                <Avatar name={selectedConversation.otherUser?.fullName} size={40} />
+                <button
+                  type="button"
+                  className="kr-msg-back-btn"
+                  onClick={handleMobileBack}
+                  aria-label="Back to conversations"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                </button>
+                {isOversightMode ? (
+                  <div className="kr-msg-conv-avatars" style={{ flexShrink: 0 }}>
+                    <Avatar name={selectedConversation.viewer?.fullName} size={38} />
+                    <Avatar name={selectedConversation.lister?.fullName} size={38} />
+                  </div>
+                ) : (
+                  <Avatar name={selectedConversation.otherUser?.fullName} size={40} />
+                )}
                 <div className="kr-msg-chat-header-info">
-                  <strong>{selectedConversation.otherUser?.fullName || "Conversation"}</strong>
-                  <span>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" />
-                    </svg>
-                    {selectedConversation.listing?.title || `Listing #${selectedConversation.propertyId}`}
-                  </span>
+                  <strong>
+                    {isOversightMode
+                      ? (selectedConversation.listing?.title || `Listing #${selectedConversation.propertyId}`)
+                      : (selectedConversation.otherUser?.fullName || "Conversation")}
+                  </strong>
+                  {isOversightMode ? (
+                    <span>
+                      <span className="kr-msg-role-chip" style={{ background: "#d4e7ff", color: "#1e3a5f" }}>viewer</span>
+                      {selectedConversation.viewer?.fullName}
+                      {" "}&nbsp;↔&nbsp;{" "}
+                      <span className="kr-msg-role-chip" style={{ background: "#d1fae5", color: "#065f46" }}>lister</span>
+                      {selectedConversation.lister?.fullName}
+                    </span>
+                  ) : (
+                    <span>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" />
+                      </svg>
+                      {selectedConversation.listing?.title || `Listing #${selectedConversation.propertyId}`}
+                    </span>
+                  )}
                 </div>
+                {isOversightMode && (
+                  <div className="kr-msg-chat-header-meta">
+                    <span className="kr-msg-admin-badge">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                      </svg>
+                      Read-only
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* thread */}
@@ -447,12 +586,30 @@ function MessagesPage() {
                               <span>{new Date(msg.createdAt).toLocaleDateString("en-KE", { weekday: "long", day: "numeric", month: "long" })}</span>
                             </div>
                           )}
-                          <div className={`kr-msg-row ${msg.isOwnMessage ? "own" : "other"}`}>
-                            {!msg.isOwnMessage && <Avatar name={selectedConversation.otherUser?.fullName} size={28} />}
+                          <div className={`kr-msg-row ${isOversightMode ? "kr-msg-row--admin" : ""} ${isOversightMode ? (msg.senderAccountType === "lister" ? "own" : "other") : (msg.isOwnMessage ? "own" : "other")}`}>
+                            {isOversightMode ? (
+                              <Avatar name={msg.senderFullName} size={28} />
+                            ) : (
+                              !msg.isOwnMessage && <Avatar name={selectedConversation.otherUser?.fullName} size={28} />
+                            )}
                             <div className="kr-msg-bubble">
+                              {isOversightMode && (
+                                <span className="kr-msg-sender-label" style={{ color: ROLE_COLORS[msg.senderAccountType] || "#1e3a5f" }}>
+                                  {msg.senderFullName}
+                                  <span
+                                    className="kr-msg-role-chip"
+                                    style={{
+                                      background: `${(ROLE_COLORS[msg.senderAccountType] || "#1e3a5f")}15`,
+                                      color: ROLE_COLORS[msg.senderAccountType] || "#1e3a5f"
+                                    }}
+                                  >
+                                    {msg.senderAccountType}
+                                  </span>
+                                </span>
+                              )}
                               <p>{msg.messageText}</p>
                               <time>{formatBubbleTime(msg.createdAt)}</time>
-                              {msg.isOwnMessage && msg.readAt && (
+                              {!isOversightMode && msg.isOwnMessage && msg.readAt && (
                                 <svg className="kr-msg-read-tick" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                   <polyline points="20 6 9 17 4 12" />
                                 </svg>
@@ -467,33 +624,34 @@ function MessagesPage() {
                 )}
               </div>
 
-              {/* compose */}
-              <div className="kr-msg-compose">
-                <textarea
-                  ref={textareaRef}
-                  className="kr-msg-compose-input"
-                  placeholder="Type a message… (Ctrl+Enter to send)"
-                  rows={3}
-                  value={messageText}
-                  onChange={(e) => setMessageText(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  disabled={sending}
-                />
-                <button
-                  type="button"
-                  className="kr-msg-send-btn"
-                  onClick={handleSendMessage}
-                  disabled={sending || messageText.trim().length < 2}
-                  aria-label="Send message"
-                >
-                  {sending ? (
-                    <span className="kr-msg-btn-spinner" />
-                  ) : (
-                    <SendIcon />
-                  )}
-                  <span>{sending ? "Sending" : "Send"}</span>
-                </button>
-              </div>
+              {!isOversightMode && (
+                <div className="kr-msg-compose">
+                  <textarea
+                    ref={textareaRef}
+                    className="kr-msg-compose-input"
+                    placeholder="Type a message… (Ctrl+Enter to send)"
+                    rows={3}
+                    value={messageText}
+                    onChange={(e) => setMessageText(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    disabled={sending}
+                  />
+                  <button
+                    type="button"
+                    className="kr-msg-send-btn"
+                    onClick={handleSendMessage}
+                    disabled={sending || messageText.trim().length < 2}
+                    aria-label="Send message"
+                  >
+                    {sending ? (
+                      <span className="kr-msg-btn-spinner" />
+                    ) : (
+                      <SendIcon />
+                    )}
+                    <span>{sending ? "Sending" : "Send"}</span>
+                  </button>
+                </div>
+              )}
             </>
           )}
         </section>

@@ -1,6 +1,7 @@
 const { pool } = require("../config/db");
 const properties = require("../data/properties");
 const { applySoftDeleteFromModeration } = require("./propertyController");
+const { ACCESS_ACTIONS, MODULE_KEYS, hasModulePermission } = require("../utils/accessControl");
 
 const ALLOWED_REASON_CODES = new Set([
   "false_pricing",
@@ -349,8 +350,8 @@ const getAdminListingReports = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can review listing reports." });
+  if (!hasModulePermission(sessionUser, MODULE_KEYS.LISTING_REPORTS, ACCESS_ACTIONS.VIEW)) {
+    return res.status(403).json({ message: "You do not have permission to review listing reports." });
   }
 
   const statusFilter = String(req.query?.status || "all").trim().toLowerCase();
@@ -526,8 +527,8 @@ const resolveListingReport = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can resolve listing reports." });
+  if (!hasModulePermission(sessionUser, MODULE_KEYS.LISTING_REPORTS, ACCESS_ACTIONS.MANAGE)) {
+    return res.status(403).json({ message: "You do not have permission to resolve listing reports." });
   }
 
   const reportId = Number(req.params.reportId);

@@ -121,6 +121,16 @@ export async function createAdminUser(payload) {
   });
 }
 
+export async function createEmployeeUser(payload) {
+  return apiRequest("/api/auth/users/employee", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+}
+
 export async function suspendUserAccount(userId, payload) {
   return apiRequest(`/api/auth/users/${userId}/suspend`, {
     method: "POST",
@@ -144,6 +154,86 @@ export async function banUserAccount(userId, payload) {
 export async function clearUserRestrictions(userId) {
   return apiRequest(`/api/auth/users/${userId}/clear-restrictions`, {
     method: "POST"
+  });
+}
+
+export async function getAccessControlModules() {
+  return apiRequest("/api/auth/access-control/modules", {
+    method: "GET"
+  });
+}
+
+export async function getEmployeeRoles() {
+  return apiRequest("/api/auth/employee-roles", {
+    method: "GET"
+  });
+}
+
+export async function createEmployeeRole(payload) {
+  return apiRequest("/api/auth/employee-roles", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+}
+
+export async function updateEmployeeRole(roleId, payload) {
+  return apiRequest(`/api/auth/employee-roles/${roleId}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+}
+
+export async function deleteEmployeeRole(roleId) {
+  return apiRequest(`/api/auth/employee-roles/${roleId}`, {
+    method: "DELETE"
+  });
+}
+
+export async function getEmployeeRolePermissions(roleId) {
+  return apiRequest(`/api/auth/employee-roles/${roleId}/permissions`, {
+    method: "GET"
+  });
+}
+
+export async function replaceEmployeeRolePermissions(roleId, payload) {
+  return apiRequest(`/api/auth/employee-roles/${roleId}/permissions`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+}
+
+export async function assignEmployeeRole(userId, payload) {
+  return apiRequest(`/api/auth/users/${userId}/employee-role`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+}
+
+export async function getUserAccessProfile(userId = "me") {
+  return apiRequest(`/api/auth/users/${userId}/access`, {
+    method: "GET"
+  });
+}
+
+export async function replaceUserAccessOverrides(userId, payload) {
+  return apiRequest(`/api/auth/users/${userId}/access`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
   });
 }
 
@@ -189,6 +279,12 @@ export async function updateEmailDeliveryConfiguration(payload) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload || {})
+  });
+}
+
+export async function triggerSponsorshipExpiryRun() {
+  return apiRequest("/api/auth/debug/sponsorship-expiry/run", {
+    method: "POST"
   });
 }
 

@@ -5,6 +5,15 @@ const {
   verifyCodeForEmail
 } = require("../services/auth/emailVerificationService");
 const { getConfiguredDeliveryProvider } = require("../services/auth/emailService");
+const { runSponsorshipExpiryCycle } = require("../jobs/sponsorshipExpiryJob");
+const {
+  ACCESS_ACTIONS,
+  MODULE_KEYS,
+  MODULE_REGISTRY,
+  applyAccessEntriesToMap,
+  hasModulePermission,
+  normalizeAccessEntry
+} = require("../utils/accessControl");
 
 const publicRegistrationAccountTypes = new Set(["lister", "viewer"]);
 const allowedSubscriptionTiers = new Set(["standard", "premium"]);
@@ -17,11 +26,20 @@ function isBcryptHash(value) {
   return /^\$2[aby]\$\d{2}\$/.test(String(value || ""));
 }
 
+function normalizeCountryCode(value, fallback = "KE") {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) return fallback;
+  if (raw === "KENYA") return "KE";
+  if (/^[A-Z]{2}$/.test(raw)) return raw;
+  return fallback;
+}
+
 function buildSessionUser(user) {
   return {
     id: user.id,
     fullName: user.full_name || user.fullName,
     email: user.email,
+    countryCode: normalizeCountryCode(user.country_code || user.countryCode, "KE"),
     accountType: user.account_type || user.accountType,
     subscriptionTier: user.subscription_tier || user.subscriptionTier || "standard",
     authProvider: user.auth_provider || user.authProvider || "local",
@@ -114,7 +132,7 @@ async function resolveTimedOutAuditUser(rawUser) {
   const email = String(rawUser.email || "").trim().toLowerCase();
   const hasEmail = Boolean(email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
   const accountType = String(rawUser.accountType || "").trim().toLowerCase();
-  const safeAccountType = ["admin", "lister", "viewer"].includes(accountType) ? accountType : null;
+  const safeAccountType = ["admin", "lister", "viewer", "employee"].includes(accountType) ? accountType : null;
 
   if (!hasValidId && !hasEmail) {
     return null;
@@ -239,6 +257,22 @@ function getRestrictionMessage(restrictionState) {
   return null;
 }
 
+function requireModuleAccessOrRespond(res, sessionUser, moduleKey, action, deniedMessage) {
+  if (!sessionUser) {
+    res.status(401).json({
+      message: "Session expired. Please log in again."
+    });
+    return false;
+  }
+  if (!hasModulePermission(sessionUser, moduleKey, action)) {
+    res.status(403).json({
+      message: deniedMessage || "You do not have permission to access this module."
+    });
+    return false;
+  }
+  return true;
+}
+
 async function getUserByIdWithRestrictions(userId) {
   const [rows] = await pool.execute(
     `
@@ -246,6 +280,7 @@ async function getUserByIdWithRestrictions(userId) {
         id,
         full_name,
         email,
+        country_code,
         account_type,
         subscription_tier,
         auth_provider,
@@ -263,6 +298,115 @@ async function getUserByIdWithRestrictions(userId) {
     [Number(userId)]
   );
   return rows[0] || null;
+}
+
+async function getRoleById(roleId) {
+  const numericRoleId = Number(roleId);
+  if (!Number.isInteger(numericRoleId) || numericRoleId <= 0) return null;
+  const [rows] = await pool.execute(
+    `
+      SELECT
+        id,
+        role_name AS roleName,
+        role_description AS roleDescription,
+        is_active AS isActive
+      FROM employee_roles
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [numericRoleId]
+  );
+  return rows[0] || null;
+}
+
+async function getRolePermissions(roleId) {
+  const numericRoleId = Number(roleId);
+  if (!Number.isInteger(numericRoleId) || numericRoleId <= 0) return [];
+  const [rows] = await pool.execute(
+    `
+      SELECT
+        module_key AS moduleKey,
+        submodule_key AS submoduleKey,
+        can_view AS canView,
+        can_manage AS canManage
+      FROM employee_role_permissions
+      WHERE role_id = ?
+    `,
+    [numericRoleId]
+  );
+  return rows.map((row) => normalizeAccessEntry(row));
+}
+
+async function getUserOverrides(userId) {
+  const numericUserId = Number(userId);
+  if (!Number.isInteger(numericUserId) || numericUserId <= 0) return [];
+  const [rows] = await pool.execute(
+    `
+      SELECT
+        module_key AS moduleKey,
+        submodule_key AS submoduleKey,
+        can_view AS canView,
+        can_manage AS canManage
+      FROM user_module_overrides
+      WHERE user_id = ?
+    `,
+    [numericUserId]
+  );
+  return rows.map((row) => normalizeAccessEntry(row));
+}
+
+async function buildEffectiveAccessForUser(user) {
+  const accountType = String(user?.account_type || user?.accountType || "").trim().toLowerCase();
+  let roleId = Number(user?.employee_role_id || user?.employeeRoleId || 0);
+  const userId = Number(user?.id || 0);
+  if (accountType !== "employee") {
+    return {
+      employeeRoleId: null,
+      employeeRoleName: null,
+      permissions: {}
+    };
+  }
+
+  if ((!Number.isInteger(roleId) || roleId <= 0) && Number.isInteger(userId) && userId > 0) {
+    const [rows] = await pool.execute(
+      `
+        SELECT employee_role_id
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [userId]
+    );
+    roleId = Number(rows?.[0]?.employee_role_id || 0);
+  }
+
+  const [role, rolePermissions, userOverrides] = await Promise.all([
+    getRoleById(roleId),
+    getRolePermissions(roleId),
+    getUserOverrides(user?.id)
+  ]);
+  const rolePermissionMap = applyAccessEntriesToMap({}, rolePermissions);
+  const effectivePermissionMap = applyAccessEntriesToMap(rolePermissionMap, userOverrides);
+
+  return {
+    employeeRoleId: role ? Number(role.id) : null,
+    employeeRoleName: role?.roleName || null,
+    permissions: effectivePermissionMap
+  };
+}
+
+async function buildSessionUserWithAccess(user) {
+  const sessionUser = buildSessionUser(user);
+  const accessProfile = await buildEffectiveAccessForUser({
+    ...user,
+    accountType: sessionUser.accountType
+  });
+  return {
+    ...sessionUser,
+    employeeRoleId: accessProfile.employeeRoleId,
+    employeeRoleName: accessProfile.employeeRoleName,
+    permissions: accessProfile.permissions
+  };
 }
 
 async function createAuditLog({
@@ -343,6 +487,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
   const providerSubject = String(oauthProfile?.providerSubject || "").trim();
   const email = String(oauthProfile?.email || "").trim().toLowerCase();
   const fullName = String(oauthProfile?.fullName || "").trim() || "New User";
+  const normalizedCountryCode = normalizeCountryCode(oauthProfile?.countryCode, "KE");
   const emailVerifiedFromProvider = Boolean(oauthProfile?.emailVerified);
 
   if (!["google", "apple"].includes(provider) || !providerSubject) {
@@ -358,6 +503,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
         id,
         full_name,
         email,
+        country_code,
         account_type,
         subscription_tier,
         auth_provider,
@@ -385,6 +531,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
         id,
         full_name,
         email,
+        country_code,
         account_type,
         subscription_tier,
         auth_provider,
@@ -411,13 +558,14 @@ async function createOrLinkOAuthUser(oauthProfile) {
         SET
           auth_provider = ?,
           provider_subject = ?,
+          country_code = COALESCE(country_code, ?),
           email_verified = CASE
             WHEN email_verified = 1 THEN 1
             ELSE ?
           END
         WHERE id = ?
       `,
-      [provider, providerSubject, emailVerifiedFromProvider ? 1 : 0, existingUser.id]
+      [provider, providerSubject, normalizedCountryCode, emailVerifiedFromProvider ? 1 : 0, existingUser.id]
     );
     const [updatedRows] = await pool.execute(
       `
@@ -425,6 +573,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
           id,
           full_name,
           email,
+          country_code,
           account_type,
           subscription_tier,
           auth_provider,
@@ -453,15 +602,16 @@ async function createOrLinkOAuthUser(oauthProfile) {
         full_name,
         email,
         password,
+        country_code,
         account_type,
         subscription_tier,
         auth_provider,
         provider_subject,
         email_verified
       )
-      VALUES (?, ?, ?, 'viewer', 'standard', ?, ?, ?)
+      VALUES (?, ?, ?, ?, 'viewer', 'standard', ?, ?, ?)
     `,
-    [fullName, email, placeholderPassword, provider, providerSubject, emailVerifiedFromProvider ? 1 : 0]
+    [fullName, email, placeholderPassword, normalizedCountryCode, provider, providerSubject, emailVerifiedFromProvider ? 1 : 0]
   );
   const [rows] = await pool.execute(
     `
@@ -469,6 +619,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
         id,
         full_name,
         email,
+        country_code,
         account_type,
         subscription_tier,
         auth_provider,
@@ -521,6 +672,7 @@ const registerUser = async (req, res) => {
     const normalizedEmail = String(email).trim().toLowerCase();
     const trimmedName = String(fullName).trim();
     const normalizedPassword = String(password);
+    const normalizedCountryCode = normalizeCountryCode(req.body?.countryCode, "KE");
 
     if (!trimmedName) {
       return res.status(400).json({
@@ -558,15 +710,16 @@ const registerUser = async (req, res) => {
         INSERT INTO users (
           full_name,
           email,
+          country_code,
           password,
           account_type,
           subscription_tier,
           auth_provider,
           email_verified
         )
-        VALUES (?, ?, ?, ?, ?, 'local', 0)
+        VALUES (?, ?, ?, ?, ?, ?, 'local', 0)
       `,
-      [trimmedName, normalizedEmail, hashedPassword, accountType, normalizedTier]
+      [trimmedName, normalizedEmail, normalizedCountryCode, hashedPassword, accountType, normalizedTier]
     );
 
     const verificationResult = await issueVerificationCodeForEmail(normalizedEmail, { forceSend: true });
@@ -582,6 +735,7 @@ const registerUser = async (req, res) => {
         id: result.insertId,
         fullName: trimmedName,
         email: normalizedEmail,
+        countryCode: normalizedCountryCode,
         accountType,
         subscriptionTier: normalizedTier,
         authProvider: "local",
@@ -724,6 +878,7 @@ const loginUser = async (req, res) => {
           id,
           full_name,
           email,
+          country_code,
           password,
           account_type,
           subscription_tier,
@@ -825,7 +980,7 @@ const loginUser = async (req, res) => {
       });
     }
 
-    const sessionUser = buildSessionUser(user);
+    const sessionUser = await buildSessionUserWithAccess(user);
     req.session.user = sessionUser;
     await createAuditLog({
       req,
@@ -963,7 +1118,7 @@ const handleOAuthCallback = async (req, res) => {
       );
     }
 
-    const sessionUser = buildSessionUser(resolvedUser);
+    const sessionUser = await buildSessionUserWithAccess(resolvedUser);
     req.session.user = sessionUser;
     await createAuditLog({
       req,
@@ -1032,6 +1187,7 @@ const updateProfile = async (req, res) => {
 
     const normalizedEmail = String(email).trim().toLowerCase();
     const trimmedName = String(fullName).trim();
+    const normalizedCountryCode = normalizeCountryCode(req.body?.countryCode, "KE");
     const numericUserId = Number(userId);
     const sessionUserId = Number(req.session.user.id);
 
@@ -1072,10 +1228,10 @@ const updateProfile = async (req, res) => {
     const [updateResult] = await pool.execute(
       `
         UPDATE users
-        SET full_name = ?, email = ?
+        SET full_name = ?, email = ?, country_code = ?
         WHERE id = ?
       `,
-      [trimmedName, normalizedEmail, numericUserId]
+      [trimmedName, normalizedEmail, normalizedCountryCode, numericUserId]
     );
 
     if (!updateResult.affectedRows) {
@@ -1086,7 +1242,7 @@ const updateProfile = async (req, res) => {
 
     const [rows] = await pool.execute(
       `
-        SELECT id, full_name, email, account_type, subscription_tier, created_at
+        SELECT id, full_name, email, country_code, account_type, subscription_tier, created_at
         FROM users
         WHERE id = ?
         LIMIT 1
@@ -1095,7 +1251,7 @@ const updateProfile = async (req, res) => {
     );
     const user = rows[0];
 
-    const updatedUser = buildSessionUser(user);
+    const updatedUser = await buildSessionUserWithAccess(user);
     req.session.user = updatedUser;
 
     return res.status(200).json({
@@ -1109,7 +1265,7 @@ const updateProfile = async (req, res) => {
   }
 };
 
-const getSessionUser = (req, res) => {
+const getSessionUser = async (req, res) => {
   const sessionUser = req.session?.user;
   if (!sessionUser) {
     return res.status(401).json({
@@ -1117,36 +1273,37 @@ const getSessionUser = (req, res) => {
     });
   }
 
-  return getUserByIdWithRestrictions(sessionUser.id)
-    .then((dbUser) => {
-      if (!dbUser) {
-        req.session.destroy(() => {});
-        return res.status(401).json({
-          message: "Session expired. Please log in again."
-        });
-      }
-
-      const restrictionState = getRestrictionState(dbUser);
-      const restrictionMessage = getRestrictionMessage(restrictionState);
-      if (restrictionMessage) {
-        req.session.destroy(() => {});
-        return res.status(403).json({
-          message: restrictionMessage
-        });
-      }
-
-      const refreshedSessionUser = buildSessionUser(dbUser);
-      req.session.user = refreshedSessionUser;
-      return res.status(200).json({
-        user: refreshedSessionUser,
-        session: {
-          timeoutMs: SESSION_IDLE_TIMEOUT_MS
-        }
+  try {
+    const dbUser = await getUserByIdWithRestrictions(sessionUser.id);
+    if (!dbUser) {
+      req.session.destroy(() => {});
+      return res.status(401).json({
+        message: "Session expired. Please log in again."
       });
-    })
-    .catch(() => res.status(500).json({
+    }
+
+    const restrictionState = getRestrictionState(dbUser);
+    const restrictionMessage = getRestrictionMessage(restrictionState);
+    if (restrictionMessage) {
+      req.session.destroy(() => {});
+      return res.status(403).json({
+        message: restrictionMessage
+      });
+    }
+
+    const refreshedSessionUser = await buildSessionUserWithAccess(dbUser);
+    req.session.user = refreshedSessionUser;
+    return res.status(200).json({
+      user: refreshedSessionUser,
+      session: {
+        timeoutMs: SESSION_IDLE_TIMEOUT_MS
+      }
+    });
+  } catch (_error) {
+    return res.status(500).json({
       message: "Failed to validate active session"
-    }));
+    });
+  }
 };
 
 const logoutUser = async (req, res) => {
@@ -1232,11 +1389,13 @@ const getAuthAuditLogs = async (req, res) => {
     });
   }
 
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({
-      message: "Only admin accounts can view authentication audit logs"
-    });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.AUDIT_LOGS,
+    ACCESS_ACTIONS.VIEW,
+    "You do not have permission to view authentication audit logs"
+  )) return;
 
   const {
     eventType = "",
@@ -1386,11 +1545,13 @@ const deleteAuthAuditLogs = async (req, res) => {
     });
   }
 
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({
-      message: "Only admin accounts can delete authentication audit logs"
-    });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.AUDIT_LOGS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to delete authentication audit logs"
+  )) return;
 
   const scope = String(req.body?.scope || "").trim().toLowerCase();
   const supportedScopes = new Set(["period", "user", "all"]);
@@ -1463,29 +1624,36 @@ const getManageableUsers = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can manage users" });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.VIEW,
+    "You do not have permission to view user access controls"
+  )) return;
 
   try {
     const [rows] = await pool.execute(
       `
         SELECT
-          id,
-          full_name,
-          email,
-          account_type,
-          subscription_tier,
-          auth_provider,
-          email_verified,
-          created_at,
-          is_banned,
-          banned_at,
-          ban_reason,
-          suspended_until,
-          suspension_reason
-        FROM users
-        ORDER BY created_at DESC, id DESC
+          u.id,
+          u.full_name,
+          u.email,
+          u.account_type,
+          u.employee_role_id,
+          er.role_name AS employee_role_name,
+          u.subscription_tier,
+          u.auth_provider,
+          u.email_verified,
+          u.created_at,
+          u.is_banned,
+          u.banned_at,
+          u.ban_reason,
+          u.suspended_until,
+          u.suspension_reason
+        FROM users u
+        LEFT JOIN employee_roles er ON er.id = u.employee_role_id
+        ORDER BY u.created_at DESC, u.id DESC
       `
     );
 
@@ -1497,6 +1665,8 @@ const getManageableUsers = async (req, res) => {
           fullName: row.full_name,
           email: row.email,
           accountType: row.account_type,
+          employeeRoleId: row.employee_role_id ? Number(row.employee_role_id) : null,
+          employeeRoleName: row.employee_role_name || null,
           subscriptionTier: row.subscription_tier,
           authProvider: row.auth_provider || "local",
           emailVerified: Boolean(row.email_verified),
@@ -1522,9 +1692,13 @@ const suspendUserAccount = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can suspend users" });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to suspend users"
+  )) return;
 
   const targetUserId = Number.parseInt(String(req.params.userId), 10);
   const durationHours = Number(req.body?.durationHours);
@@ -1605,9 +1779,13 @@ const banUserAccount = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can ban users" });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to ban users"
+  )) return;
 
   const targetUserId = Number.parseInt(String(req.params.userId), 10);
   const reason = normalizeReasonText(req.body?.reason, "admin_ban");
@@ -1671,9 +1849,13 @@ const clearUserRestrictions = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can update restrictions" });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to update user restrictions"
+  )) return;
 
   const targetUserId = Number.parseInt(String(req.params.userId), 10);
   if (!Number.isInteger(targetUserId) || targetUserId <= 0) {
@@ -1729,9 +1911,13 @@ const getEmailDeliveryConfiguration = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can view email delivery configuration" });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.SYSTEM_SETTINGS,
+    ACCESS_ACTIONS.VIEW,
+    "You do not have permission to view email delivery settings"
+  )) return;
 
   try {
     const provider = await getConfiguredDeliveryProvider();
@@ -1753,9 +1939,13 @@ const updateEmailDeliveryConfiguration = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can update email delivery configuration" });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.SYSTEM_SETTINGS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to update email delivery settings"
+  )) return;
 
   const provider = normalizeEmailProvider(req.body?.provider);
   if (!provider) {
@@ -1796,14 +1986,48 @@ const updateEmailDeliveryConfiguration = async (req, res) => {
   }
 };
 
+const triggerSponsorshipExpiryRun = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!sessionUser) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.SYSTEM_SETTINGS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to run sponsorship maintenance jobs"
+  )) return;
+
+  try {
+    const result = await runSponsorshipExpiryCycle();
+    if (result?.skipped) {
+      return res.status(409).json({
+        message: "Sponsorship maintenance run skipped because another run is in progress.",
+        result
+      });
+    }
+    return res.status(200).json({
+      message: "Sponsorship maintenance run completed.",
+      result
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to run sponsorship maintenance job." });
+  }
+};
+
 const getListingPricingConfiguration = async (req, res) => {
   const sessionUser = req.session?.user;
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can view listing pricing configuration" });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.PRICING,
+    ACCESS_ACTIONS.VIEW,
+    "You do not have permission to view listing pricing settings"
+  )) return;
 
   try {
     const [rulesRows] = await pool.execute(
@@ -1847,9 +2071,13 @@ const updateListingPricingConfiguration = async (req, res) => {
   if (!sessionUser) {
     return res.status(401).json({ message: "Session expired. Please log in again." });
   }
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can update listing pricing configuration" });
-  }
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.PRICING,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to update listing pricing settings"
+  )) return;
 
   const incomingRules = Array.isArray(req.body?.rules) ? req.body.rules : null;
   const incomingDiscounts = Array.isArray(req.body?.discounts) ? req.body.discounts : null;
@@ -2040,9 +2268,570 @@ const updateListingPricingConfiguration = async (req, res) => {
   return getListingPricingConfiguration(req, res);
 };
 
+function normalizePermissionEntries(payloadEntries) {
+  const entries = Array.isArray(payloadEntries) ? payloadEntries : [];
+  const dedup = new Map();
+  entries.forEach((entry) => {
+    const normalized = normalizeAccessEntry(entry);
+    if (!normalized.moduleKey) return;
+    const compositeKey = `${normalized.moduleKey}::${normalized.submoduleKey}`;
+    dedup.set(compositeKey, normalized);
+  });
+  return Array.from(dedup.values());
+}
+
+const getAccessControlModules = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!sessionUser) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+  if (!["admin", "employee"].includes(String(sessionUser.accountType || "").trim().toLowerCase())) {
+    return res.status(403).json({ message: "Only admin and employee users can access this resource." });
+  }
+  return res.status(200).json({ data: MODULE_REGISTRY });
+};
+
+const createEmployeeUser = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to create employee users"
+  )) return;
+
+  const fullName = String(req.body?.fullName || "").trim();
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const temporaryPassword = String(req.body?.temporaryPassword || "");
+  const roleIdRaw = req.body?.employeeRoleId;
+  const roleId = roleIdRaw === undefined || roleIdRaw === null || roleIdRaw === ""
+    ? null
+    : Number(roleIdRaw);
+
+  if (!fullName || !email || !temporaryPassword) {
+    return res.status(400).json({
+      message: "Full name, email and temporary password are required."
+    });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ message: "Please provide a valid email address." });
+  }
+  if (temporaryPassword.length < 6) {
+    return res.status(400).json({ message: "Temporary password must be at least 6 characters." });
+  }
+  if (roleId !== null && (!Number.isInteger(roleId) || roleId <= 0)) {
+    return res.status(400).json({ message: "employeeRoleId must be a valid role id." });
+  }
+
+  try {
+    if (roleId !== null) {
+      const role = await getRoleById(roleId);
+      if (!role) {
+        return res.status(404).json({ message: "Selected employee role was not found." });
+      }
+    }
+
+    const [existingRows] = await pool.execute(
+      "SELECT id FROM users WHERE email = ? LIMIT 1",
+      [email]
+    );
+    if (existingRows.length > 0) {
+      return res.status(409).json({ message: "An account with this email already exists." });
+    }
+
+    const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
+    const [result] = await pool.execute(
+      `
+        INSERT INTO users (
+          full_name,
+          email,
+          password,
+          account_type,
+          employee_role_id,
+          subscription_tier,
+          auth_provider,
+          email_verified
+        )
+        VALUES (?, ?, ?, 'employee', ?, 'standard', 'local', 1)
+      `,
+      [fullName, email, passwordHash, roleId]
+    );
+
+    const [rows] = await pool.execute(
+      `
+        SELECT
+          u.id,
+          u.full_name,
+          u.email,
+          u.account_type,
+          u.subscription_tier,
+          u.employee_role_id,
+          er.role_name AS employee_role_name,
+          u.created_at
+        FROM users u
+        LEFT JOIN employee_roles er ON er.id = u.employee_role_id
+        WHERE u.id = ?
+        LIMIT 1
+      `,
+      [result.insertId]
+    );
+    return res.status(201).json({
+      message: "Employee account created successfully.",
+      user: {
+        id: rows[0].id,
+        fullName: rows[0].full_name,
+        email: rows[0].email,
+        accountType: rows[0].account_type,
+        subscriptionTier: rows[0].subscription_tier,
+        employeeRoleId: rows[0].employee_role_id ? Number(rows[0].employee_role_id) : null,
+        employeeRoleName: rows[0].employee_role_name || null,
+        createdAt: rows[0].created_at
+      }
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to create employee user." });
+  }
+};
+
+const getEmployeeRoles = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.VIEW,
+    "You do not have permission to view employee roles"
+  )) return;
+
+  try {
+    const [rows] = await pool.execute(
+      `
+        SELECT
+          er.id,
+          er.role_name AS roleName,
+          er.role_description AS roleDescription,
+          er.is_active AS isActive,
+          er.created_at AS createdAt,
+          er.updated_at AS updatedAt,
+          (
+            SELECT COUNT(*)
+            FROM users u
+            WHERE u.employee_role_id = er.id
+              AND u.account_type = 'employee'
+          ) AS employeeCount
+        FROM employee_roles er
+        ORDER BY er.created_at DESC, er.id DESC
+      `
+    );
+    return res.status(200).json({
+      data: rows.map((row) => ({
+        ...row,
+        employeeCount: Number(row.employeeCount || 0),
+        isActive: Boolean(row.isActive)
+      }))
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to fetch employee roles." });
+  }
+};
+
+const createEmployeeRole = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to create employee roles"
+  )) return;
+
+  const roleName = String(req.body?.roleName || "").trim();
+  const roleDescription = String(req.body?.roleDescription || "").trim();
+  if (!roleName) {
+    return res.status(400).json({ message: "roleName is required." });
+  }
+
+  try {
+    const [result] = await pool.execute(
+      `
+        INSERT INTO employee_roles (role_name, role_description, is_active)
+        VALUES (?, ?, 1)
+      `,
+      [roleName, roleDescription || null]
+    );
+    return res.status(201).json({
+      message: "Employee role created successfully.",
+      role: {
+        id: result.insertId,
+        roleName,
+        roleDescription: roleDescription || null,
+        isActive: true
+      }
+    });
+  } catch (error) {
+    if (error?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ message: "A role with this name already exists." });
+    }
+    return res.status(500).json({ message: "Failed to create employee role." });
+  }
+};
+
+const updateEmployeeRole = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to update employee roles"
+  )) return;
+
+  const roleId = Number.parseInt(String(req.params.roleId), 10);
+  const roleName = String(req.body?.roleName || "").trim();
+  const roleDescription = String(req.body?.roleDescription || "").trim();
+  const isActive = req.body?.isActive;
+  if (!Number.isInteger(roleId) || roleId <= 0) {
+    return res.status(400).json({ message: "Invalid role id." });
+  }
+  if (!roleName) {
+    return res.status(400).json({ message: "roleName is required." });
+  }
+
+  try {
+    const [result] = await pool.execute(
+      `
+        UPDATE employee_roles
+        SET role_name = ?, role_description = ?, is_active = ?
+        WHERE id = ?
+      `,
+      [roleName, roleDescription || null, isActive === undefined ? 1 : (isActive ? 1 : 0), roleId]
+    );
+    if (!result.affectedRows) {
+      return res.status(404).json({ message: "Role not found." });
+    }
+    return res.status(200).json({ message: "Employee role updated successfully." });
+  } catch (error) {
+    if (error?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ message: "A role with this name already exists." });
+    }
+    return res.status(500).json({ message: "Failed to update employee role." });
+  }
+};
+
+const deleteEmployeeRole = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to delete employee roles"
+  )) return;
+
+  const roleId = Number.parseInt(String(req.params.roleId), 10);
+  if (!Number.isInteger(roleId) || roleId <= 0) {
+    return res.status(400).json({ message: "Invalid role id." });
+  }
+
+  try {
+    const [result] = await pool.execute(
+      "DELETE FROM employee_roles WHERE id = ?",
+      [roleId]
+    );
+    if (!result.affectedRows) {
+      return res.status(404).json({ message: "Role not found." });
+    }
+    return res.status(200).json({ message: "Employee role deleted successfully." });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to delete employee role." });
+  }
+};
+
+const getEmployeeRolePermissions = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.VIEW,
+    "You do not have permission to view employee role permissions"
+  )) return;
+
+  const roleId = Number.parseInt(String(req.params.roleId), 10);
+  if (!Number.isInteger(roleId) || roleId <= 0) {
+    return res.status(400).json({ message: "Invalid role id." });
+  }
+
+  try {
+    const role = await getRoleById(roleId);
+    if (!role) {
+      return res.status(404).json({ message: "Role not found." });
+    }
+    const permissions = await getRolePermissions(roleId);
+    return res.status(200).json({
+      role,
+      permissions
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to fetch role permissions." });
+  }
+};
+
+const replaceEmployeeRolePermissions = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to update role permissions"
+  )) return;
+
+  const roleId = Number.parseInt(String(req.params.roleId), 10);
+  if (!Number.isInteger(roleId) || roleId <= 0) {
+    return res.status(400).json({ message: "Invalid role id." });
+  }
+
+  const normalizedPermissions = normalizePermissionEntries(req.body?.permissions);
+  const connection = await pool.getConnection();
+  try {
+    const role = await getRoleById(roleId);
+    if (!role) {
+      connection.release();
+      return res.status(404).json({ message: "Role not found." });
+    }
+
+    await connection.beginTransaction();
+    await connection.execute(
+      "DELETE FROM employee_role_permissions WHERE role_id = ?",
+      [roleId]
+    );
+    for (const permission of normalizedPermissions) {
+      await connection.execute(
+        `
+          INSERT INTO employee_role_permissions (
+            role_id, module_key, submodule_key, can_view, can_manage
+          )
+          VALUES (?, ?, ?, ?, ?)
+        `,
+        [
+          roleId,
+          permission.moduleKey,
+          permission.submoduleKey || "*",
+          permission.canView ? 1 : 0,
+          permission.canManage ? 1 : 0
+        ]
+      );
+    }
+    await connection.commit();
+    connection.release();
+    return res.status(200).json({
+      message: "Role permissions updated successfully.",
+      permissions: normalizedPermissions
+    });
+  } catch (_error) {
+    await connection.rollback();
+    connection.release();
+    return res.status(500).json({ message: "Failed to update role permissions." });
+  }
+};
+
+const assignEmployeeRole = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to assign employee roles"
+  )) return;
+
+  const userId = Number.parseInt(String(req.params.userId), 10);
+  const roleIdRaw = req.body?.employeeRoleId;
+  const roleId = roleIdRaw === null || roleIdRaw === undefined || roleIdRaw === ""
+    ? null
+    : Number(roleIdRaw);
+
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ message: "Invalid user id." });
+  }
+  if (roleId !== null && (!Number.isInteger(roleId) || roleId <= 0)) {
+    return res.status(400).json({ message: "employeeRoleId must be null or a valid role id." });
+  }
+
+  try {
+    const [targetRows] = await pool.execute(
+      `
+        SELECT id, account_type
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [userId]
+    );
+    const targetUser = targetRows[0];
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    if (String(targetUser.account_type).toLowerCase() !== "employee") {
+      return res.status(400).json({ message: "Only employee accounts can be assigned employee roles." });
+    }
+    if (roleId !== null) {
+      const role = await getRoleById(roleId);
+      if (!role) {
+        return res.status(404).json({ message: "Employee role not found." });
+      }
+    }
+
+    await pool.execute(
+      `
+        UPDATE users
+        SET employee_role_id = ?
+        WHERE id = ?
+      `,
+      [roleId, userId]
+    );
+    return res.status(200).json({ message: "Employee role assignment updated." });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to assign employee role." });
+  }
+};
+
+const getUserEffectiveAccess = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!sessionUser) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+
+  const userIdParam = req.params.userId;
+  const isSelfLookup = String(userIdParam || "me").trim().toLowerCase() === "me";
+  const requestedUserId = isSelfLookup ? Number(sessionUser.id) : Number.parseInt(String(userIdParam), 10);
+  if (!Number.isInteger(requestedUserId) || requestedUserId <= 0) {
+    return res.status(400).json({ message: "Invalid user id." });
+  }
+
+  const isAdmin = String(sessionUser.accountType || "").toLowerCase() === "admin";
+  const isSelf = Number(sessionUser.id) === requestedUserId;
+  if (!isAdmin && !isSelf) {
+    return res.status(403).json({ message: "You can only view your own permissions." });
+  }
+  if (!isAdmin && String(sessionUser.accountType || "").toLowerCase() !== "employee") {
+    return res.status(403).json({ message: "Only employee users can view permission maps." });
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      `
+        SELECT
+          u.id,
+          u.account_type,
+          u.employee_role_id,
+          er.role_name AS employee_role_name
+        FROM users u
+        LEFT JOIN employee_roles er ON er.id = u.employee_role_id
+        WHERE u.id = ?
+        LIMIT 1
+      `,
+      [requestedUserId]
+    );
+    const targetUser = rows[0];
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    const rolePermissions = await getRolePermissions(targetUser.employee_role_id);
+    const overrides = await getUserOverrides(requestedUserId);
+    const effectiveAccess = await buildEffectiveAccessForUser(targetUser);
+    return res.status(200).json({
+      userId: requestedUserId,
+      accountType: targetUser.account_type,
+      employeeRoleId: targetUser.employee_role_id ? Number(targetUser.employee_role_id) : null,
+      employeeRoleName: targetUser.employee_role_name || null,
+      rolePermissions,
+      overrides,
+      effectivePermissions: effectiveAccess.permissions
+    });
+  } catch (_error) {
+    return res.status(500).json({ message: "Failed to fetch user access profile." });
+  }
+};
+
+const replaceUserAccessOverrides = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!requireModuleAccessOrRespond(
+    res,
+    sessionUser,
+    MODULE_KEYS.USER_ACCESS,
+    ACCESS_ACTIONS.MANAGE,
+    "You do not have permission to update user overrides"
+  )) return;
+
+  const userId = Number.parseInt(String(req.params.userId), 10);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ message: "Invalid user id." });
+  }
+
+  const normalizedPermissions = normalizePermissionEntries(req.body?.overrides || req.body?.permissions);
+  const connection = await pool.getConnection();
+  try {
+    const [userRows] = await connection.execute(
+      `
+        SELECT id, account_type
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [userId]
+    );
+    const targetUser = userRows[0];
+    if (!targetUser) {
+      connection.release();
+      return res.status(404).json({ message: "User not found." });
+    }
+    if (String(targetUser.account_type).toLowerCase() !== "employee") {
+      connection.release();
+      return res.status(400).json({ message: "Only employee accounts support module overrides." });
+    }
+
+    await connection.beginTransaction();
+    await connection.execute(
+      "DELETE FROM user_module_overrides WHERE user_id = ?",
+      [userId]
+    );
+    for (const permission of normalizedPermissions) {
+      await connection.execute(
+        `
+          INSERT INTO user_module_overrides (
+            user_id, module_key, submodule_key, can_view, can_manage
+          )
+          VALUES (?, ?, ?, ?, ?)
+        `,
+        [
+          userId,
+          permission.moduleKey,
+          permission.submoduleKey || "*",
+          permission.canView ? 1 : 0,
+          permission.canManage ? 1 : 0
+        ]
+      );
+    }
+    await connection.commit();
+    connection.release();
+    return res.status(200).json({
+      message: "User overrides updated successfully.",
+      overrides: normalizedPermissions
+    });
+  } catch (_error) {
+    await connection.rollback();
+    connection.release();
+    return res.status(500).json({ message: "Failed to update user overrides." });
+  }
+};
+
 module.exports = {
   registerUser,
   createAdminUser,
+  createEmployeeUser,
   loginUser,
   verifyEmailCode,
   resendVerificationCode,
@@ -2053,6 +2842,16 @@ module.exports = {
   logoutUser,
   getAuthAuditLogs,
   deleteAuthAuditLogs,
+  getAccessControlModules,
+  getEmployeeRoles,
+  createEmployeeRole,
+  updateEmployeeRole,
+  deleteEmployeeRole,
+  getEmployeeRolePermissions,
+  replaceEmployeeRolePermissions,
+  assignEmployeeRole,
+  getUserEffectiveAccess,
+  replaceUserAccessOverrides,
   getListingPricingConfiguration,
   updateListingPricingConfiguration,
   getManageableUsers,
@@ -2060,5 +2859,6 @@ module.exports = {
   banUserAccount,
   clearUserRestrictions,
   getEmailDeliveryConfiguration,
-  updateEmailDeliveryConfiguration
+  updateEmailDeliveryConfiguration,
+  triggerSponsorshipExpiryRun
 };

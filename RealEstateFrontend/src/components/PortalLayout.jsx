@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { logoutAccount } from "../services/authService";
+import { getMyUnreadMessageCount } from "../services/messageService";
+import { getRealtimeSocket } from "../services/realtimeSocket";
 import { notify } from "../utils/notify";
 import {
   clearStoredSessionMeta,
@@ -9,6 +11,7 @@ import {
   getStoredUser,
   setStoredTheme
 } from "../utils/session";
+import { ACCESS_ACTIONS, MODULE_KEYS, canAccessModule } from "../utils/accessControl";
 
 const NAV_ITEMS = [
   {
@@ -57,7 +60,7 @@ const NAV_ITEMS = [
   {
     to: "/messages",
     label: "Messages",
-    roles: ["viewer", "lister", "admin"],
+    roles: ["viewer", "lister"],
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -65,9 +68,25 @@ const NAV_ITEMS = [
     )
   },
   {
+    to: "/messages",
+    label: "Conversation Oversight",
+    roles: ["admin", "employee"],
+    moduleKey: MODULE_KEYS.ADMIN_MESSAGES,
+    action: ACCESS_ACTIONS.VIEW,
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8 10h8" />
+        <path d="M8 14h5" />
+        <path d="M21 12c0 4.97-4.03 9-9 9-1.53 0-2.97-.38-4.23-1.05L3 21l1.3-4.13A8.96 8.96 0 0 1 3 12c0-4.97 4.03-9 9-9s9 4.03 9 9z" />
+      </svg>
+    )
+  },
+  {
     to: "/admin/user-access",
     label: "User Access",
-    roles: ["admin"],
+    roles: ["admin", "employee"],
+    moduleKey: MODULE_KEYS.USER_ACCESS,
+    action: ACCESS_ACTIONS.VIEW,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
@@ -80,7 +99,9 @@ const NAV_ITEMS = [
   {
     to: "/admin/listing-reports",
     label: "Reports",
-    roles: ["admin"],
+    roles: ["admin", "employee"],
+    moduleKey: MODULE_KEYS.LISTING_REPORTS,
+    action: ACCESS_ACTIONS.VIEW,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/>
@@ -89,21 +110,11 @@ const NAV_ITEMS = [
     )
   },
   {
-    to: "/admin/messages",
-    label: "Conversation Oversight",
-    roles: ["admin"],
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M8 10h8" />
-        <path d="M8 14h5" />
-        <path d="M21 12c0 4.97-4.03 9-9 9-1.53 0-2.97-.38-4.23-1.05L3 21l1.3-4.13A8.96 8.96 0 0 1 3 12c0-4.97 4.03-9 9-9s9 4.03 9 9z" />
-      </svg>
-    )
-  },
-  {
     to: "/admin/audit-logs",
     label: "Audit Logs",
-    roles: ["admin"],
+    roles: ["admin", "employee"],
+    moduleKey: MODULE_KEYS.AUDIT_LOGS,
+    action: ACCESS_ACTIONS.VIEW,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M9 12h6"/><path d="M9 16h6"/><path d="M9 8h6"/>
@@ -114,7 +125,9 @@ const NAV_ITEMS = [
   {
     to: "/admin/finances",
     label: "Finances",
-    roles: ["admin"],
+    roles: ["admin", "employee"],
+    moduleKey: MODULE_KEYS.ADMIN_FINANCES,
+    action: ACCESS_ACTIONS.VIEW,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="12" y1="1" x2="12" y2="23"/>
@@ -125,7 +138,9 @@ const NAV_ITEMS = [
   {
     to: "/admin/pricing",
     label: "Pricing",
-    roles: ["admin"],
+    roles: ["admin", "employee"],
+    moduleKey: MODULE_KEYS.PRICING,
+    action: ACCESS_ACTIONS.VIEW,
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="12" y1="1" x2="12" y2="23"/>
@@ -136,7 +151,7 @@ const NAV_ITEMS = [
   {
     to: "/settings",
     label: "Settings",
-    roles: ["viewer", "lister", "admin"],
+    roles: ["viewer", "lister", "admin", "employee"],
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="3"/>
@@ -152,6 +167,9 @@ function PortalLayout({ title, subtitle, children }) {
   const [user, setUser] = useState(() => getStoredUser());
   const [theme, setTheme] = useState(() => (getStoredUser() ? getStoredTheme() : "light"));
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const [isUnreadBadgeBumping, setIsUnreadBadgeBumping] = useState(false);
+  const prevUnreadCountRef = useRef(0);
 
   const displayName = useMemo(() => user?.fullName?.split(" ")[0] || "User", [user]);
   const initials = useMemo(() => {
@@ -160,6 +178,10 @@ function PortalLayout({ title, subtitle, children }) {
       ? `${parts[0][0]}${parts[1][0]}`.toUpperCase()
       : parts[0][0].toUpperCase();
   }, [user]);
+  const shouldTrackUnreadMessages = useMemo(() => {
+    const accountType = String(user?.accountType || "").toLowerCase();
+    return accountType === "viewer" || accountType === "lister";
+  }, [user?.accountType]);
 
   useEffect(() => {
     const effectiveTheme = user ? theme : "light";
@@ -220,6 +242,89 @@ function PortalLayout({ title, subtitle, children }) {
     return () => window.removeEventListener("keydown", handleEscapeClose);
   }, [isMobileNavOpen]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!user || !shouldTrackUnreadMessages) {
+      setUnreadMessageCount(0);
+      return undefined;
+    }
+
+    const loadUnreadCount = async () => {
+      try {
+        const response = await getMyUnreadMessageCount();
+        if (cancelled) return;
+        setUnreadMessageCount(Math.max(0, Number(response?.unreadCount || 0)));
+      } catch (_error) {
+        if (!cancelled) {
+          setUnreadMessageCount(0);
+        }
+      }
+    };
+
+    void loadUnreadCount();
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname, shouldTrackUnreadMessages, user]);
+
+  useEffect(() => {
+    if (!user || !shouldTrackUnreadMessages) {
+      return undefined;
+    }
+    const socket = getRealtimeSocket();
+    let cancelled = false;
+    let refreshTimeout = null;
+
+    const loadUnreadCount = async () => {
+      try {
+        const response = await getMyUnreadMessageCount();
+        if (cancelled) return;
+        setUnreadMessageCount(Math.max(0, Number(response?.unreadCount || 0)));
+      } catch (_error) {
+        if (!cancelled) {
+          setUnreadMessageCount(0);
+        }
+      }
+    };
+
+    const scheduleRefresh = () => {
+      if (refreshTimeout) clearTimeout(refreshTimeout);
+      refreshTimeout = setTimeout(() => {
+        void loadUnreadCount();
+      }, 220);
+    };
+
+    const onWindowFocus = () => scheduleRefresh();
+    const onBadgeRefresh = () => scheduleRefresh();
+
+    socket.on("messages:new-message", scheduleRefresh);
+    socket.on("messages:conversation-updated", scheduleRefresh);
+    window.addEventListener("focus", onWindowFocus);
+    window.addEventListener("messages:badge-refresh", onBadgeRefresh);
+
+    return () => {
+      cancelled = true;
+      socket.off("messages:new-message", scheduleRefresh);
+      socket.off("messages:conversation-updated", scheduleRefresh);
+      window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("messages:badge-refresh", onBadgeRefresh);
+      if (refreshTimeout) clearTimeout(refreshTimeout);
+    };
+  }, [shouldTrackUnreadMessages, user]);
+
+  useEffect(() => {
+    if (unreadMessageCount > prevUnreadCountRef.current) {
+      setIsUnreadBadgeBumping(true);
+      const timeout = setTimeout(() => {
+        setIsUnreadBadgeBumping(false);
+      }, 420);
+      prevUnreadCountRef.current = unreadMessageCount;
+      return () => clearTimeout(timeout);
+    }
+    prevUnreadCountRef.current = unreadMessageCount;
+    return undefined;
+  }, [unreadMessageCount]);
+
   const handleLogout = async () => {
     try {
       await logoutAccount({ reason: "manual" });
@@ -232,9 +337,15 @@ function PortalLayout({ title, subtitle, children }) {
     navigate("/login", { replace: true });
   };
 
-  const visibleNavItems = NAV_ITEMS.filter(
-    (item) => !item.roles || item.roles.includes(user?.accountType)
-  );
+  const visibleNavItems = NAV_ITEMS.filter((item) => {
+    if (item.roles && !item.roles.includes(user?.accountType)) {
+      return false;
+    }
+    if (item.moduleKey && !canAccessModule(user, item.moduleKey, item.action || ACCESS_ACTIONS.VIEW)) {
+      return false;
+    }
+    return true;
+  });
 
   // Guest (unauthenticated) view — no sidebar, no user identity, no logout button.
   // Renders a clean full-width layout with only a slim top bar showing the brand
@@ -326,7 +437,15 @@ function PortalLayout({ title, subtitle, children }) {
               }
             >
               <span className="kr-portal-link-icon">{item.icon}</span>
-              {item.label}
+              <span className="kr-portal-link-label">{item.label}</span>
+              {item.to === "/messages" && item.label === "Messages" && unreadMessageCount > 0 && (
+                <span
+                  className={`kr-portal-unread-badge${isUnreadBadgeBumping ? " is-bump" : ""}`}
+                  aria-label={`${unreadMessageCount} unread messages`}
+                >
+                  {unreadMessageCount > 99 ? "99+" : unreadMessageCount}
+                </span>
+              )}
             </NavLink>
           ))}
           <div className="kr-sidebar-nav-divider"></div>

@@ -7,12 +7,24 @@ import {
 } from "../services/authService";
 import { notify } from "../utils/notify";
 
+const COUNTRY_OPTIONS = [
+  { code: "KE", label: "Kenya" },
+  { code: "UG", label: "Uganda" },
+  { code: "TZ", label: "Tanzania" },
+  { code: "RW", label: "Rwanda" },
+  { code: "BI", label: "Burundi" },
+  { code: "ET", label: "Ethiopia" },
+  { code: "SS", label: "South Sudan" },
+  { code: "SO", label: "Somalia" }
+];
+
 function RegisterPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [formState, setFormState] = useState({
     fullName: "",
     email: "",
+    countryCode: "KE",
     password: "",
     accountType: "viewer",
     subscriptionTier: "standard"
@@ -280,6 +292,32 @@ function RegisterPage() {
                     onChange={handleInputChange}
                     required
                   />
+                </div>
+              </div>
+
+              <div className="kr-field">
+                <label className="kr-field-label" htmlFor="countryCode">Country</label>
+                <div className="kr-field-input-wrap">
+                  <span className="kr-field-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="10"/>
+                      <line x1="2" y1="12" x2="22" y2="12"/>
+                      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                    </svg>
+                  </span>
+                  <select
+                    id="countryCode"
+                    name="countryCode"
+                    className="form-control kr-field-input"
+                    value={formState.countryCode}
+                    onChange={handleInputChange}
+                  >
+                    {COUNTRY_OPTIONS.map((option) => (
+                      <option key={option.code} value={option.code}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 

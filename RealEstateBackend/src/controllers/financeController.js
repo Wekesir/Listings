@@ -1,5 +1,6 @@
 const PDFDocument = require("pdfkit");
 const { pool } = require("../config/db");
+const { ACCESS_ACTIONS, MODULE_KEYS, hasModulePermission } = require("../utils/accessControl");
 
 function parsePositiveInt(value, fallback, max = null) {
   const numeric = Number.parseInt(String(value || ""), 10);
@@ -316,8 +317,8 @@ async function getListerFinancePayments(req, res) {
 async function getAdminFinanceSummary(req, res) {
   const sessionUser = getSessionUser(req, res);
   if (!sessionUser) return;
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can view finance summary." });
+  if (!hasModulePermission(sessionUser, MODULE_KEYS.ADMIN_FINANCES, ACCESS_ACTIONS.VIEW)) {
+    return res.status(403).json({ message: "You do not have permission to view finance summary." });
   }
 
   try {
@@ -335,8 +336,8 @@ async function getAdminFinanceSummary(req, res) {
 async function getAdminFinancePayments(req, res) {
   const sessionUser = getSessionUser(req, res);
   if (!sessionUser) return;
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can view finance payments." });
+  if (!hasModulePermission(sessionUser, MODULE_KEYS.ADMIN_FINANCES, ACCESS_ACTIONS.VIEW)) {
+    return res.status(403).json({ message: "You do not have permission to view finance payments." });
   }
 
   try {
@@ -462,7 +463,7 @@ async function downloadPaymentReceiptPdf(req, res) {
       return res.status(404).json({ message: "Payment not found." });
     }
 
-    const isAdmin = sessionUser.accountType === "admin";
+  const isAdmin = hasModulePermission(sessionUser, MODULE_KEYS.ADMIN_FINANCES, ACCESS_ACTIONS.VIEW);
     const isOwner = Number(payment.userId) === Number(sessionUser.id);
     if (!isAdmin && !isOwner) {
       return res.status(403).json({ message: "You are not allowed to download this receipt." });
@@ -799,8 +800,8 @@ async function exportListerFinanceCsv(req, res) {
 async function exportAdminFinanceCsv(req, res) {
   const sessionUser = getSessionUser(req, res);
   if (!sessionUser) return;
-  if (sessionUser.accountType !== "admin") {
-    return res.status(403).json({ message: "Only admin accounts can export admin finance CSV." });
+  if (!hasModulePermission(sessionUser, MODULE_KEYS.ADMIN_FINANCES, ACCESS_ACTIONS.MANAGE)) {
+    return res.status(403).json({ message: "You do not have permission to export admin finance CSV." });
   }
   try {
     return await exportFinanceCsv(req, res, true, null);

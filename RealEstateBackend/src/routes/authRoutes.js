@@ -2,6 +2,7 @@ const express = require("express");
 const {
   registerUser,
   createAdminUser,
+  createEmployeeUser,
   loginUser,
   verifyEmailCode,
   resendVerificationCode,
@@ -12,6 +13,16 @@ const {
   logoutUser,
   getAuthAuditLogs,
   deleteAuthAuditLogs,
+  getAccessControlModules,
+  getEmployeeRoles,
+  createEmployeeRole,
+  updateEmployeeRole,
+  deleteEmployeeRole,
+  getEmployeeRolePermissions,
+  replaceEmployeeRolePermissions,
+  assignEmployeeRole,
+  getUserEffectiveAccess,
+  replaceUserAccessOverrides,
   getListingPricingConfiguration,
   updateListingPricingConfiguration,
   getManageableUsers,
@@ -19,7 +30,8 @@ const {
   banUserAccount,
   clearUserRestrictions,
   getEmailDeliveryConfiguration,
-  updateEmailDeliveryConfiguration
+  updateEmailDeliveryConfiguration,
+  triggerSponsorshipExpiryRun
 } = require("../controllers/authController");
 const { passport } = require("../services/auth/passport");
 const {
@@ -27,6 +39,8 @@ const {
   resolveListingReport
 } = require("../controllers/listingReportController");
 const ensureDbConnection = require("../middleware/ensureDbConnection");
+const { requireModulePermission } = require("../middleware/requirePermission");
+const { ACCESS_ACTIONS, MODULE_KEYS } = require("../utils/accessControl");
 
 const router = express.Router();
 
@@ -49,19 +63,32 @@ router.post("/verify-email-code", verifyEmailCode);
 router.post("/resend-verification-code", resendVerificationCode);
 router.post("/logout", logoutUser);
 router.get("/session", getSessionUser);
-router.get("/audit-logs", getAuthAuditLogs);
-router.post("/audit-logs/delete", deleteAuthAuditLogs);
-router.get("/listing-pricing", getListingPricingConfiguration);
-router.put("/listing-pricing", updateListingPricingConfiguration);
-router.get("/users", getManageableUsers);
-router.get("/listing-reports", getAdminListingReports);
-router.patch("/listing-reports/:reportId", resolveListingReport);
+router.get("/audit-logs", requireModulePermission(MODULE_KEYS.AUDIT_LOGS, ACCESS_ACTIONS.VIEW), getAuthAuditLogs);
+router.post("/audit-logs/delete", requireModulePermission(MODULE_KEYS.AUDIT_LOGS, ACCESS_ACTIONS.MANAGE), deleteAuthAuditLogs);
+router.get("/access-control/modules", getAccessControlModules);
+router.get("/employee-roles", getEmployeeRoles);
+router.post("/employee-roles", createEmployeeRole);
+router.put("/employee-roles/:roleId", updateEmployeeRole);
+router.delete("/employee-roles/:roleId", deleteEmployeeRole);
+router.get("/employee-roles/:roleId/permissions", getEmployeeRolePermissions);
+router.put("/employee-roles/:roleId/permissions", replaceEmployeeRolePermissions);
+router.get("/listing-pricing", requireModulePermission(MODULE_KEYS.PRICING, ACCESS_ACTIONS.VIEW), getListingPricingConfiguration);
+router.put("/listing-pricing", requireModulePermission(MODULE_KEYS.PRICING, ACCESS_ACTIONS.MANAGE), updateListingPricingConfiguration);
+router.get("/users", requireModulePermission(MODULE_KEYS.USER_ACCESS, ACCESS_ACTIONS.VIEW), getManageableUsers);
+router.post("/users/employee", requireModulePermission(MODULE_KEYS.USER_ACCESS, ACCESS_ACTIONS.MANAGE), createEmployeeUser);
+router.put("/users/:userId/employee-role", requireModulePermission(MODULE_KEYS.USER_ACCESS, ACCESS_ACTIONS.MANAGE), assignEmployeeRole);
+router.get("/users/:userId/access", getUserEffectiveAccess);
+router.put("/users/:userId/access", requireModulePermission(MODULE_KEYS.USER_ACCESS, ACCESS_ACTIONS.MANAGE), replaceUserAccessOverrides);
+router.get("/users/me/access", getUserEffectiveAccess);
+router.get("/listing-reports", requireModulePermission(MODULE_KEYS.LISTING_REPORTS, ACCESS_ACTIONS.VIEW), getAdminListingReports);
+router.patch("/listing-reports/:reportId", requireModulePermission(MODULE_KEYS.LISTING_REPORTS, ACCESS_ACTIONS.MANAGE), resolveListingReport);
 router.post("/users/admin", createAdminUser);
-router.post("/users/:userId/suspend", suspendUserAccount);
-router.post("/users/:userId/ban", banUserAccount);
-router.post("/users/:userId/clear-restrictions", clearUserRestrictions);
-router.get("/email-delivery", getEmailDeliveryConfiguration);
-router.put("/email-delivery", updateEmailDeliveryConfiguration);
+router.post("/users/:userId/suspend", requireModulePermission(MODULE_KEYS.USER_ACCESS, ACCESS_ACTIONS.MANAGE), suspendUserAccount);
+router.post("/users/:userId/ban", requireModulePermission(MODULE_KEYS.USER_ACCESS, ACCESS_ACTIONS.MANAGE), banUserAccount);
+router.post("/users/:userId/clear-restrictions", requireModulePermission(MODULE_KEYS.USER_ACCESS, ACCESS_ACTIONS.MANAGE), clearUserRestrictions);
+router.get("/email-delivery", requireModulePermission(MODULE_KEYS.SYSTEM_SETTINGS, ACCESS_ACTIONS.VIEW), getEmailDeliveryConfiguration);
+router.put("/email-delivery", requireModulePermission(MODULE_KEYS.SYSTEM_SETTINGS, ACCESS_ACTIONS.MANAGE), updateEmailDeliveryConfiguration);
+router.post("/debug/sponsorship-expiry/run", requireModulePermission(MODULE_KEYS.SYSTEM_SETTINGS, ACCESS_ACTIONS.MANAGE), triggerSponsorshipExpiryRun);
 router.put("/profile", updateProfile);
 router.get("/oauth/providers", (_req, res) => {
   const googleConfigured = Boolean(passport._strategy("google"));

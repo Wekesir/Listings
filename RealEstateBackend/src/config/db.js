@@ -513,6 +513,8 @@ async function initializeDatabase() {
       owner_id INT NULL,
       title VARCHAR(255) NOT NULL,
       location VARCHAR(255) NOT NULL,
+      latitude DECIMAL(10, 7) NULL,
+      longitude DECIMAL(10, 7) NULL,
       type ENUM('rent', 'lease') NOT NULL,
       price DECIMAL(12, 2) NOT NULL,
       description TEXT NOT NULL,
@@ -575,6 +577,34 @@ async function initializeDatabase() {
     await pool.query(`
       ALTER TABLE properties
       ADD COLUMN sponsorship_expired_notice_sent_at DATETIME NULL AFTER sponsorship_warning_sent_at
+    `);
+  }
+
+  const [propertiesLatitudeColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'properties'
+      AND COLUMN_NAME = 'latitude'
+  `);
+  if (Number(propertiesLatitudeColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE properties
+      ADD COLUMN latitude DECIMAL(10, 7) NULL AFTER location
+    `);
+  }
+
+  const [propertiesLongitudeColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'properties'
+      AND COLUMN_NAME = 'longitude'
+  `);
+  if (Number(propertiesLongitudeColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE properties
+      ADD COLUMN longitude DECIMAL(10, 7) NULL AFTER latitude
     `);
   }
 
@@ -793,6 +823,8 @@ async function initializeDatabase() {
       owner_id,
       title,
       location,
+      latitude,
+      longitude,
       type,
       price,
       description,
@@ -810,6 +842,8 @@ async function initializeDatabase() {
       NULL,
       CONCAT('Legacy Property #', lp.property_id),
       'Unknown',
+      NULL,
+      NULL,
       'rent',
       0,
       'Backfilled placeholder listing created to preserve payment foreign-key integrity.',
@@ -1233,6 +1267,8 @@ async function syncPropertiesTable(properties) {
           owner_id,
           title,
           location,
+          latitude,
+          longitude,
           type,
           price,
           description,
@@ -1255,11 +1291,13 @@ async function syncPropertiesTable(properties) {
           last_payment_reference,
           last_payment_provider
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
           owner_id = VALUES(owner_id),
           title = VALUES(title),
           location = VALUES(location),
+          latitude = VALUES(latitude),
+          longitude = VALUES(longitude),
           type = VALUES(type),
           price = VALUES(price),
           description = VALUES(description),
@@ -1287,6 +1325,8 @@ async function syncPropertiesTable(properties) {
         Number.isFinite(Number(item.ownerId)) ? Number(item.ownerId) : null,
         String(item.title || `Property ${item.id}`),
         String(item.location || "Unknown"),
+        Number.isFinite(Number(item.latitude)) ? Number(item.latitude) : null,
+        Number.isFinite(Number(item.longitude)) ? Number(item.longitude) : null,
         ["rent", "lease"].includes(String(item.type || "").toLowerCase()) ? String(item.type).toLowerCase() : "rent",
         Number.isFinite(Number(item.price)) ? Number(item.price) : 0,
         String(item.description || ""),

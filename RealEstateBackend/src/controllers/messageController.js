@@ -474,6 +474,40 @@ async function listMyConversations(req, res) {
   }
 }
 
+async function getMyUnreadMessageCount(req, res) {
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+
+  const currentUserId = Number(sessionUser.id);
+  if (!Number.isFinite(currentUserId) || currentUserId <= 0) {
+    return res.status(401).json({ message: "Session expired. Please log in again." });
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      `
+        SELECT COUNT(*) AS unreadCount
+        FROM listing_messages lm
+        INNER JOIN listing_conversations c ON c.id = lm.conversation_id
+        WHERE (c.viewer_user_id = ? OR c.lister_user_id = ?)
+          AND lm.sender_user_id <> ?
+          AND lm.read_at IS NULL
+      `,
+      [currentUserId, currentUserId, currentUserId]
+    );
+
+    return res.status(200).json({
+      unreadCount: Number(rows?.[0]?.unreadCount || 0)
+    });
+  } catch (_error) {
+    return res.status(500).json({
+      message: "Could not load unread message count right now."
+    });
+  }
+}
+
 async function listConversationMessages(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
@@ -864,6 +898,7 @@ async function listAdminConversations(req, res) {
 module.exports = {
   createListingInquiryConversation,
   listMyConversations,
+  getMyUnreadMessageCount,
   listConversationMessages,
   sendConversationMessage,
   markConversationAsRead,

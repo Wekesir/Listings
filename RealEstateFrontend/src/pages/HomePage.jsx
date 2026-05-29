@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { getProperties, submitInquiry } from "../services/propertyService";
 import { logoutAccount } from "../services/authService";
 import { useShortlist } from "../hooks/useShortlist";
@@ -69,7 +69,63 @@ function getPropertyFeatures(id) {
   return { beds, baths, area };
 }
 
+const NAIROBI_AREAS = [
+  "Westlands", "Karen", "Kilimani", "Runda", "Lavington", "Parklands", "Syokimau", "Ngong Road"
+];
+
+const HOW_IT_WORKS_STEPS = [
+  {
+    step: "01",
+    title: "Browse & filter",
+    body: "Explore verified rentals and leases across Nairobi with filters for budget, location, and property type.",
+    tone: "blue"
+  },
+  {
+    step: "02",
+    title: "Shortlist favorites",
+    body: "Save the properties you love and compare them side by side before booking a viewing.",
+    tone: "amber"
+  },
+  {
+    step: "03",
+    title: "Connect fast",
+    body: "Send inquiries in one click and get matched with the right landlord or tenant in days, not weeks.",
+    tone: "green"
+  }
+];
+
+const TESTIMONIALS = [
+  {
+    quote: "I shortlisted five apartments in one evening and signed a lease in Karen within a week. The process felt effortless.",
+    name: "Grace Mwangi",
+    role: "Tenant · Kilimani",
+    initials: "GM",
+    tone: "blue"
+  },
+  {
+    quote: "Listing my units on KenReal brought qualified leads faster than any agent I had used before. Worth every shilling.",
+    name: "James Ochieng",
+    role: "Property owner · Westlands",
+    initials: "JO",
+    tone: "amber"
+  },
+  {
+    quote: "Clean interface, verified listings, and responsive support. This is how property search should work in Kenya.",
+    name: "Amina Hassan",
+    role: "Tenant · Parklands",
+    initials: "AH",
+    tone: "purple"
+  }
+];
+
+const HERO_SHOWCASE_FALLBACK = [
+  { id: "demo-1", title: "Modern 2-Bed Apartment", location: "Westlands, Nairobi", type: "rent", price: 85000 },
+  { id: "demo-2", title: "Garden Villa with Pool", location: "Karen, Nairobi", type: "lease", price: 120000 },
+  { id: "demo-3", title: "Studio near CBD", location: "Kilimani, Nairobi", type: "rent", price: 45000 }
+];
+
 function HomePage() {
+  const navigate = useNavigate();
   const [properties, setProperties] = useState([]);
   const [loggedInUser, setLoggedInUser] = useState(() => getStoredUser());
   const [loading, setLoading] = useState(true);
@@ -80,6 +136,8 @@ function HomePage() {
   const [selectedProperty, setSelectedProperty] = useState(null);
   const [inquiryForm, setInquiryForm] = useState({ name: "", email: "", message: "" });
   const [inquirySubmitting, setInquirySubmitting] = useState(false);
+  const [heroSearch, setHeroSearch] = useState("");
+  const [heroType, setHeroType] = useState("all");
   const { shortlistedIds, shortlistedLookup, toggleShortlist } = useShortlist();
 
   useEffect(() => {
@@ -145,6 +203,12 @@ function HomePage() {
     [properties]
   );
 
+  const heroShowcase = useMemo(() => {
+    if (featuredProperties.length >= 3) return featuredProperties.slice(0, 3);
+    if (featuredProperties.length > 0) return featuredProperties;
+    return HERO_SHOWCASE_FALLBACK;
+  }, [featuredProperties]);
+
   /* Scroll-reveal: adds animate.css classes when elements enter the viewport.
      Re-runs after loading so dynamically rendered cards are picked up. */
   useEffect(() => {
@@ -167,7 +231,30 @@ function HomePage() {
     );
     els.forEach((el) => observer.observe(el));
     return () => observer.disconnect();
-  }, [loading]);
+  }, [loading, featuredProperties.length]);
+
+  const handleHeroSearch = (event) => {
+    event.preventDefault();
+    const params = new URLSearchParams();
+    const term = heroSearch.trim();
+    if (term) params.set("search", term);
+    if (heroType !== "all") params.set("type", heroType);
+    const qs = params.toString();
+    navigate(qs ? `/browse?${qs}` : "/browse");
+  };
+
+  const getPreviewLink = (item) => {
+    const id = String(item.id ?? "");
+    if (id && !id.startsWith("demo-")) {
+      return `/listings/${item.id}`;
+    }
+    const params = new URLSearchParams();
+    const area = item.location?.split(",")[0]?.trim();
+    if (area) params.set("search", area);
+    if (item.type) params.set("type", item.type);
+    const qs = params.toString();
+    return qs ? `/browse?${qs}` : "/browse";
+  };
 
   const [contactForm, setContactForm] = useState({
     name: "",
@@ -240,13 +327,20 @@ function HomePage() {
     setLoggedInUser(null);
   };
 
+  const statItems = [
+    { end: 200, suffix: "+", label: "Verified Properties", icon: "🏠", tone: "blue" },
+    { end: 8500, suffix: "+", label: "Monthly Inquiries", icon: "💬", tone: "green" },
+    { end: 4, suffix: " days", label: "Avg. Match Time", icon: "⚡", tone: "amber" },
+    { end: 98, suffix: "%", label: "Satisfaction Rate", icon: "⭐", tone: "purple" }
+  ];
+
   return (
-    <div>
+    <div className="kr-home">
       {/* ─────────── Navbar ─────────── */}
-      <nav className={`site-navbar sticky-top ${scrolled ? "site-navbar--scrolled" : ""}`}>
+      <nav className={`site-navbar site-navbar--home sticky-top ${scrolled ? "site-navbar--scrolled" : ""}`}>
+        <div className="kr-nav-glow-strip" aria-hidden="true" />
         <div className="container kr-nav-inner">
-          {/* Brand */}
-          <a className="navbar-brand-logo" href="#">
+          <Link to="/" className="navbar-brand-logo">
             <span className="brand-icon">
               <svg width="22" height="22" viewBox="0 0 64 64" aria-hidden="true">
                 <rect width="64" height="64" rx="14" fill="#1e3a5f" />
@@ -254,11 +348,13 @@ function HomePage() {
                 <text x="14" y="42" fontFamily="Arial, sans-serif" fontSize="24" fontWeight="700" fill="#ffffff">KR</text>
               </svg>
             </span>
-            KenReal<span className="brand-dot"></span>Estates
-          </a>
+            <span className="brand-text">
+              KenReal<span className="brand-dot"></span>Estates
+            </span>
+          </Link>
 
           {/* Desktop centre links */}
-          <ul className="navbar-nav d-none d-lg-flex flex-row gap-1 mb-0 mx-auto">
+          <ul className="navbar-nav d-none d-lg-flex flex-row mb-0 mx-auto kr-nav-pill-track">
             <li className="nav-item">
               <Link className="nav-link kr-nav-link" to="/browse">Listings</Link>
             </li>
@@ -282,17 +378,20 @@ function HomePage() {
             )}
           </div>
 
-          {/* Mobile hamburger */}
-          <button
-            className={`kr-nav-hamburger d-lg-none ms-auto ${navOpen ? "kr-nav-hamburger--open" : ""}`}
-            onClick={() => setNavOpen((v) => !v)}
-            aria-label={navOpen ? "Close menu" : "Open menu"}
-            aria-expanded={navOpen}
-          >
-            <span />
-            <span />
-            <span />
-          </button>
+          {/* Mobile actions */}
+          <div className="kr-nav-mobile-actions d-lg-none">
+            <Link to="/browse" className="kr-nav-mobile-browse">Browse</Link>
+            <button
+              className={`kr-nav-hamburger ${navOpen ? "kr-nav-hamburger--open" : ""}`}
+              onClick={() => setNavOpen((v) => !v)}
+              aria-label={navOpen ? "Close menu" : "Open menu"}
+              aria-expanded={navOpen}
+            >
+              <span />
+              <span />
+              <span />
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -371,10 +470,18 @@ function HomePage() {
 
       {/* ─────────── Hero ─────────── */}
       <header className="kr-hero">
-        {/* Decorative geometric shapes */}
+        {/* Decorative shapes + color orbs */}
+        <div className="kr-hero-mesh" aria-hidden="true"></div>
+        <div className="kr-hero-glow-floor" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--amber kr-glow-blob--hero-3" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--green kr-glow-blob--hero-4" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--blue kr-glow-blob--hero-5" aria-hidden="true"></div>
         <div className="kr-hero-geo kr-hero-geo-1"></div>
         <div className="kr-hero-geo kr-hero-geo-2"></div>
         <div className="kr-hero-geo kr-hero-geo-3"></div>
+        <div className="kr-hero-orb kr-hero-orb-1" aria-hidden="true"></div>
+        <div className="kr-hero-orb kr-hero-orb-2" aria-hidden="true"></div>
+        <div className="kr-hero-orb kr-hero-orb-3" aria-hidden="true"></div>
 
         <div className="container">
           <div className="row align-items-center g-5">
@@ -392,7 +499,57 @@ function HomePage() {
                 KenReal Estates connects property owners and tenants through a
                 smart shortlist-first experience built for modern real estate in Kenya.
               </p>
-              <div className="d-flex gap-3 flex-wrap mb-5">
+
+              <form className="kr-hero-search" onSubmit={handleHeroSearch}>
+                <div className="kr-hero-search-main">
+                  <span className="kr-hero-search-icon" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                    </svg>
+                  </span>
+                  <input
+                    type="search"
+                    className="kr-hero-search-input"
+                    placeholder="Search Westlands, Karen, Kilimani…"
+                    value={heroSearch}
+                    onChange={(e) => setHeroSearch(e.target.value)}
+                    aria-label="Search properties"
+                  />
+                </div>
+                <div className="kr-hero-search-types" role="group" aria-label="Property type">
+                  {["all", "rent", "lease"].map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      className={`kr-hero-search-type${heroType === type ? " kr-hero-search-type--active" : ""}`}
+                      onClick={() => setHeroType(type)}
+                    >
+                      {type === "all" ? "All" : type.charAt(0).toUpperCase() + type.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                <button type="submit" className="kr-hero-search-submit">
+                  Search
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                  </svg>
+                </button>
+              </form>
+
+              <div className="kr-hero-area-chips">
+                <span className="kr-hero-area-label">Popular:</span>
+                {NAIROBI_AREAS.slice(0, 5).map((area) => (
+                  <Link
+                    key={area}
+                    to={`/browse?search=${encodeURIComponent(area)}`}
+                    className="kr-hero-area-chip"
+                  >
+                    {area}
+                  </Link>
+                ))}
+              </div>
+
+              <div className="d-flex gap-3 flex-wrap mb-4 mt-4">
                 <Link to="/browse" className="kr-hero-cta-primary">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: "0.4rem" }}>
                     <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
@@ -424,37 +581,47 @@ function HomePage() {
             </div>
 
             <div className="col-lg-5 offset-lg-1 anim-fade-up anim-delay-2">
-              <div className="kr-snapshot-card">
-                <div className="kr-snapshot-header">
-                  <span className="kr-snapshot-live-dot"></span>
-                  <span className="kr-snapshot-label">Platform Snapshot</span>
-                </div>
-                <div className="stat-row">
-                  <span>Active listings</span>
-                  <span className="stat-val">
-                    {loading ? "—" : <CountUpVal end={properties.length} />}
-                  </span>
-                </div>
-                <div className="stat-row">
-                  <span>Tenant inquiries / month</span>
-                  <span className="stat-val"><CountUpVal end={8500} suffix="+" /></span>
-                </div>
-                <div className="stat-row">
-                  <span>Average match time</span>
-                  <span className="stat-val"><CountUpVal end={4} suffix=" days" /></span>
-                </div>
-                <div className="stat-row">
-                  <span>Your shortlisted</span>
-                  <span className="stat-val"><CountUpVal end={shortlistedIds.length} /></span>
-                </div>
-                <div className="kr-snapshot-footer">
-                  <div className="kr-snapshot-bar-wrap">
-                    <div className="kr-snapshot-bar-label">Match rate</div>
-                    <div className="kr-snapshot-bar-track">
-                      <div className="kr-snapshot-bar-fill"></div>
+              <div className="kr-hero-visual">
+                <div className="kr-hero-visual-glow" aria-hidden="true"></div>
+                <div className="kr-glow-blob kr-glow-blob--cyan kr-glow-blob--hero-1" aria-hidden="true"></div>
+                <div className="kr-glow-blob kr-glow-blob--purple kr-glow-blob--hero-2" aria-hidden="true"></div>
+                {heroShowcase.map((item, index) => (
+                  <Link
+                    key={item.id}
+                    to={getPreviewLink(item)}
+                    className={`kr-hero-preview kr-hero-preview--${index}`}
+                    data-animate="fadeInUp"
+                    data-animate-delay={120 + index * 100}
+                  >
+                    <div
+                      className={`kr-hero-preview-media kr-card-image-${item.type || "rent"} ${
+                        hasCustomImage(item.imageUrl) ? "" : "kr-has-fallback-image"
+                      }`}
+                    >
+                      <img
+                        src={resolvePropertyImageUrl(item.imageUrl, item.type || "rent")}
+                        alt={item.title}
+                        className="kr-hero-preview-photo"
+                        loading="lazy"
+                        onError={(event) => {
+                          event.currentTarget.onerror = null;
+                          event.currentTarget.src = getFallbackImage(item.type || "rent");
+                        }}
+                      />
+                      <span className={`kr-hero-preview-type kr-badge-${item.type || "rent"}`}>
+                        {item.type || "rent"}
+                      </span>
                     </div>
-                    <span className="kr-snapshot-bar-pct"><CountUpVal end={98} suffix="%" /></span>
-                  </div>
+                    <div className="kr-hero-preview-body">
+                      <h3 className="kr-hero-preview-title">{item.title}</h3>
+                      <p className="kr-hero-preview-location">{item.location}</p>
+                      <p className="kr-hero-preview-price">{formatPrice(item.price, item.type || "rent")}</p>
+                    </div>
+                  </Link>
+                ))}
+                <div className="kr-hero-live-badge">
+                  <span className="kr-snapshot-live-dot"></span>
+                  {loading ? "Loading listings…" : `${properties.length} live on platform`}
                 </div>
               </div>
             </div>
@@ -464,16 +631,13 @@ function HomePage() {
 
       {/* ─────────── Stats strip ─────────── */}
       <div className="kr-stats-strip">
+        <div className="kr-glow-blob kr-glow-blob--blue kr-glow-blob--stats-left" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--amber kr-glow-blob--stats-right" aria-hidden="true"></div>
         <div className="container">
           <div className="kr-stats-grid">
-            {[
-              { end: 200,  suffix: "+",     label: "Verified Properties", icon: "🏠" },
-              { end: 8500, suffix: "+",     label: "Monthly Inquiries",   icon: "💬" },
-              { end: 4,    suffix: " days", label: "Avg. Match Time",     icon: "⚡" },
-              { end: 98,   suffix: "%",     label: "Satisfaction Rate",   icon: "⭐" },
-            ].map(({ end, suffix, label, icon }, i) => (
+            {statItems.map(({ end, suffix, label, icon, tone }, i) => (
               <div
-                className="kr-stat-item"
+                className={`kr-stat-item kr-stat-item--${tone}`}
                 key={label}
                 data-animate="fadeInUp"
                 data-animate-delay={i * 90}
@@ -489,9 +653,78 @@ function HomePage() {
         </div>
       </div>
 
+      {/* ─────────── How it works ─────────── */}
+      <section className="kr-how-section" aria-labelledby="how-it-works-title">
+        <div className="kr-glow-blob kr-glow-blob--green kr-glow-blob--how" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--purple kr-glow-blob--how-2" aria-hidden="true"></div>
+        <div className="container">
+          <div className="kr-section-header kr-section-header-center" data-animate="fadeInDown">
+            <p className="kr-section-eyebrow">Simple process</p>
+            <h2 id="how-it-works-title" className="kr-section-title">How KenReal works</h2>
+            <div className="kr-section-divider" style={{ margin: "0.75rem auto 0" }}></div>
+            <p className="kr-how-sub">
+              From first search to signed lease — three clear steps designed for renters and property owners alike.
+            </p>
+          </div>
+          <div className="kr-how-grid">
+            {HOW_IT_WORKS_STEPS.map(({ step, title, body, tone }, i) => (
+              <article
+                key={step}
+                className={`kr-how-card kr-how-card--${tone}`}
+                data-animate="fadeInUp"
+                data-animate-delay={i * 100}
+              >
+                <span className="kr-how-step">{step}</span>
+                <h3 className="kr-how-title">{title}</h3>
+                <p className="kr-how-body">{body}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ─────────── Audience split ─────────── */}
+      <section className="kr-audience-section">
+        <div className="kr-glow-blob kr-glow-blob--blue kr-glow-blob--audience" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--amber kr-glow-blob--audience-2" aria-hidden="true"></div>
+        <div className="container">
+          <div className="kr-audience-grid">
+            <article className="kr-audience-card kr-audience-card--tenant" data-animate="fadeInLeft">
+              <span className="kr-audience-eyebrow">For tenants</span>
+              <h3 className="kr-audience-title">Find a home you&apos;ll love</h3>
+              <p className="kr-audience-body">
+                Browse curated rentals and leases, shortlist your favorites, and reach landlords without the back-and-forth.
+              </p>
+              <ul className="kr-audience-list">
+                <li>Verified listings across Nairobi</li>
+                <li>One-click shortlist &amp; compare</li>
+                <li>Direct inquiry to property owners</li>
+              </ul>
+              <Link to="/browse" className="kr-audience-cta">Start browsing →</Link>
+            </article>
+            <article className="kr-audience-card kr-audience-card--lister" data-animate="fadeInRight" data-animate-delay="120">
+              <span className="kr-audience-eyebrow">For property owners</span>
+              <h3 className="kr-audience-title">List smarter, fill faster</h3>
+              <p className="kr-audience-body">
+                Publish sponsored listings, manage inquiries from one dashboard, and reach serious tenants ready to move.
+              </p>
+              <ul className="kr-audience-list">
+                <li>Promoted visibility on the platform</li>
+                <li>Media-rich property profiles</li>
+                <li>Transparent pricing &amp; receipts</li>
+              </ul>
+              <Link to="/register" className="kr-audience-cta kr-audience-cta--light">List your property →</Link>
+            </article>
+          </div>
+        </div>
+      </section>
+
       {/* ─────────── Featured Listings (teaser) ─────────── */}
       <section id="listings" className="kr-listings-section">
-        <div className="container">
+        <div className="kr-glow-blob kr-glow-blob--amber kr-glow-blob--listings" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--cyan kr-glow-blob--listings-2" aria-hidden="true"></div>
+        <div className="kr-section-bg-deco kr-section-bg-deco--listings" aria-hidden="true"></div>
+        <div className="container" style={{ position: "relative", zIndex: 1 }}>
 
           <div className="kr-section-header" data-animate="fadeInDown">
             <div>
@@ -654,6 +887,9 @@ function HomePage() {
 
       {/* ─────────── Contact Us ─────────── */}
       <section id="contact" className="kr-contact-section">
+        <div className="kr-glow-blob kr-glow-blob--cyan kr-glow-blob--contact" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--purple kr-glow-blob--contact-2" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--amber kr-glow-blob--contact-3" aria-hidden="true"></div>
         <div className="container">
           <div className="kr-section-header kr-section-header-center" data-animate="fadeInDown">
             <p className="kr-section-eyebrow">Get In Touch</p>
@@ -858,6 +1094,8 @@ function HomePage() {
 
       {/* ─────────── Why KenReal ─────────── */}
       <section id="why-us" className="kr-why-section">
+        <div className="kr-glow-blob kr-glow-blob--cyan kr-glow-blob--why" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--purple kr-glow-blob--why-2" aria-hidden="true"></div>
         <div className="kr-why-bg-deco" aria-hidden="true">
           <img
             src="https://images.unsplash.com/photo-1486325212027-8081e485255e?auto=format&fit=crop&w=1800&q=75"
@@ -916,12 +1154,49 @@ function HomePage() {
         </div>
       </section>
 
+      {/* ─────────── Testimonials ─────────── */}
+      <section className="kr-testimonials-section" aria-labelledby="testimonials-title">
+        <div className="kr-testimonials-bg" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--purple kr-glow-blob--testimonials" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--amber kr-glow-blob--testimonials-2" aria-hidden="true"></div>
+        <div className="container" style={{ position: "relative", zIndex: 1 }}>
+          <div className="kr-section-header kr-section-header-center" data-animate="fadeInDown">
+            <p className="kr-section-eyebrow">Community voices</p>
+            <h2 id="testimonials-title" className="kr-section-title">Trusted by renters &amp; owners</h2>
+            <div className="kr-section-divider" style={{ margin: "0.75rem auto 0" }}></div>
+          </div>
+          <div className="kr-testimonials-grid">
+            {TESTIMONIALS.map(({ quote, name, role, initials, tone }, i) => (
+              <blockquote
+                key={name}
+                className={`kr-testimonial kr-testimonial--${tone}`}
+                data-animate="fadeInUp"
+                data-animate-delay={i * 90}
+              >
+                <p className="kr-testimonial-quote">&ldquo;{quote}&rdquo;</p>
+                <footer className="kr-testimonial-footer">
+                  <span className="kr-testimonial-avatar">{initials}</span>
+                  <div>
+                    <cite className="kr-testimonial-name">{name}</cite>
+                    <span className="kr-testimonial-role">{role}</span>
+                  </div>
+                </footer>
+              </blockquote>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ─────────── CTA ─────────── */}
-      <section id="contact" className="kr-cta-section">
+      <section id="join" className="kr-cta-section">
+        <div className="kr-glow-blob kr-glow-blob--amber kr-glow-blob--cta" aria-hidden="true"></div>
+        <div className="kr-glow-blob kr-glow-blob--cyan kr-glow-blob--cta-2" aria-hidden="true"></div>
         <div className="container">
           <div className="kr-cta-card" data-animate="zoomIn">
             <div className="kr-cta-orb kr-cta-orb-1"></div>
             <div className="kr-cta-orb kr-cta-orb-2"></div>
+            <div className="kr-cta-orb kr-cta-orb-3"></div>
+            <div className="kr-cta-mesh" aria-hidden="true"></div>
             <div className="kr-cta-inner">
               <div className="kr-cta-text">
                 <span className="kr-cta-eyebrow">Join KenReal Today</span>
@@ -1104,6 +1379,7 @@ function HomePage() {
 
       {/* ─────────── Footer ─────────── */}
       <footer className="kr-footer">
+        <div className="kr-footer-glow" aria-hidden="true"></div>
         <div className="container">
           <div className="kr-footer-grid">
             <div className="kr-footer-brand">

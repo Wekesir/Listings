@@ -47,6 +47,15 @@ function toDbDateTimeOrNull(value) {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
+function parseCoordinateOrNull(rawValue) {
+  if (rawValue === undefined || rawValue === null) return null;
+  const text = String(rawValue).trim();
+  if (!text) return null;
+  const numeric = Number(text);
+  if (!Number.isFinite(numeric)) return Number.NaN;
+  return numeric;
+}
+
 async function syncPropertyToDatabase(property) {
   if (!property || !Number.isFinite(Number(property.id)) || Number(property.id) <= 0) {
     return;
@@ -61,6 +70,8 @@ async function syncPropertyToDatabase(property) {
         owner_id,
         title,
         location,
+        latitude,
+        longitude,
         type,
         price,
         description,
@@ -83,11 +94,13 @@ async function syncPropertyToDatabase(property) {
         last_payment_reference,
         last_payment_provider
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         owner_id = VALUES(owner_id),
         title = VALUES(title),
         location = VALUES(location),
+        latitude = VALUES(latitude),
+        longitude = VALUES(longitude),
         type = VALUES(type),
         price = VALUES(price),
         description = VALUES(description),
@@ -115,6 +128,8 @@ async function syncPropertyToDatabase(property) {
       Number.isFinite(Number(property.ownerId)) ? Number(property.ownerId) : null,
       String(property.title || `Property ${property.id}`),
       String(property.location || "Unknown"),
+      Number.isFinite(Number(property.latitude)) ? Number(property.latitude) : null,
+      Number.isFinite(Number(property.longitude)) ? Number(property.longitude) : null,
       ["rent", "lease"].includes(String(property.type || "").toLowerCase())
         ? String(property.type).toLowerCase()
         : "rent",
@@ -940,7 +955,7 @@ const getPropertyById = async (req, res) => {
 };
 
 const createProperty = async (req, res) => {
-  const { title, location, type, price, description, ownerId } = req.body || {};
+  const { title, location, type, price, description, ownerId, latitude, longitude } = req.body || {};
   const uploadedImages = Array.isArray(req.files?.images) ? req.files.images : [];
   const uploadedVideo = Array.isArray(req.files?.video) ? req.files.video[0] : null;
   const requestedIntent = normalizePaymentIntent(req.body?.paymentIntent);
@@ -980,6 +995,21 @@ const createProperty = async (req, res) => {
   if (!normalizedDescription) {
     return res.status(400).json({
       message: "Description is required"
+    });
+  }
+
+  const parsedLatitude = parseCoordinateOrNull(latitude);
+  const parsedLongitude = parseCoordinateOrNull(longitude);
+  const hasLatitudeInput = latitude !== undefined;
+  const hasLongitudeInput = longitude !== undefined;
+  if (hasLatitudeInput !== hasLongitudeInput) {
+    return res.status(400).json({
+      message: "Latitude and longitude must be provided together."
+    });
+  }
+  if (Number.isNaN(parsedLatitude) || Number.isNaN(parsedLongitude)) {
+    return res.status(400).json({
+      message: "Latitude and longitude must be valid numbers."
     });
   }
 
@@ -1061,6 +1091,8 @@ const createProperty = async (req, res) => {
     id: nextId,
     title: String(title).trim(),
     location: String(location).trim(),
+    latitude: parsedLatitude,
+    longitude: parsedLongitude,
     type: normalizedType,
     price: Math.round(numericPrice),
     description: normalizedDescription,
@@ -1458,6 +1490,8 @@ const updateProperty = async (req, res) => {
   const {
     title,
     location,
+    latitude,
+    longitude,
     type,
     price,
     description
@@ -1477,6 +1511,20 @@ const updateProperty = async (req, res) => {
 
   if (title !== undefined) property.title = String(title).trim() || property.title;
   if (location !== undefined) property.location = String(location).trim() || property.location;
+  const hasLatitudeInput = latitude !== undefined;
+  const hasLongitudeInput = longitude !== undefined;
+  if (hasLatitudeInput !== hasLongitudeInput) {
+    return res.status(400).json({ message: "Latitude and longitude must be provided together." });
+  }
+  if (hasLatitudeInput && hasLongitudeInput) {
+    const parsedLatitude = parseCoordinateOrNull(latitude);
+    const parsedLongitude = parseCoordinateOrNull(longitude);
+    if (Number.isNaN(parsedLatitude) || Number.isNaN(parsedLongitude)) {
+      return res.status(400).json({ message: "Latitude and longitude must be valid numbers." });
+    }
+    property.latitude = parsedLatitude;
+    property.longitude = parsedLongitude;
+  }
   if (type !== undefined) {
     const normalizedType = String(type).trim().toLowerCase();
     if (normalizedType !== "rent" && normalizedType !== "lease") {

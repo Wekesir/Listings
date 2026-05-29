@@ -51,6 +51,10 @@ function IcoPin() { return <svg width="18" height="18" viewBox="0 0 24 24" fill=
 function IcoArrow() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>; }
 function IcoRefresh() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>; }
 function IcoFlag() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>; }
+function IcoEye() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>; }
+function IcoBookmark() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>; }
+function IcoChatBubble() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>; }
+function IcoPhone() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.61 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>; }
 
 function SectionHead({ eyebrow, title }) {
   return (
@@ -233,22 +237,30 @@ function DashboardPage() {
       {
         label: "Property views",
         value: Number(totals.views || 0),
-        helper: "Unique tracked detail-page visits"
+        helper: "Detail-page visits",
+        icon: <IcoEye />,
+        color: "blue"
       },
       {
-        label: "Interested (shortlist)",
+        label: "Saved to shortlist",
         value: Number(totals.interestedShortlist || 0),
-        helper: "Users who saved your listings"
+        helper: "Bookmarked by viewers",
+        icon: <IcoBookmark />,
+        color: "purple"
       },
       {
-        label: "Interested (inquiry)",
+        label: "Inquiry interest",
         value: Number(totals.interestedInquiry || 0),
-        helper: "Users who started inquiry threads"
+        helper: "Opened inquiry threads",
+        icon: <IcoChatBubble />,
+        color: "amber"
       },
       {
         label: "Reached out",
         value: Number(totals.reachedOut || 0),
-        helper: "Users who sent inquiry messages"
+        helper: "Sent you a message",
+        icon: <IcoPhone />,
+        color: "green"
       }
     ];
   }, [isAdmin, engagementSummary]);
@@ -312,7 +324,7 @@ function DashboardPage() {
 
       <div className="kr-db-section-row">
         <SectionHead eyebrow="Overview" title="Platform snapshot" />
-        <div className="row g-3 mt-0">
+        <div className="kr-db-stat-grid">
           {statCards.map((card) => {
             const inner = (
               <div className={`kr-db-stat-card kr-db-stat-card--${card.color}`}>
@@ -321,13 +333,13 @@ function DashboardPage() {
                   <span className="kr-db-stat-sub">{card.sub}</span>
                 </div>
                 <p className="kr-db-stat-value">
-                  {dashboardLoading ? <span className="kr-db-skel" /> : card.value}
+                  {dashboardLoading ? <span className="kr-db-skel" /> : Number(card.value).toLocaleString("en-KE")}
                 </p>
                 <p className="kr-db-stat-label">{card.label}</p>
               </div>
             );
             return (
-              <div className="col-sm-6 col-xl-3" key={card.label}>
+              <div key={card.label}>
                 {card.link
                   ? <button type="button" className="kr-db-stat-btn" onClick={() => navigate(card.link)}>{inner}</button>
                   : inner}
@@ -346,50 +358,54 @@ function DashboardPage() {
               Real-time updates
             </div>
             {engagementLoading ? (
-              <div className="kr-db-analytics-grid">
+              <div className="kr-db-engagement-grid">
                 {[1, 2, 3, 4].map((n) => (
-                  <div key={n} className="kr-db-analytics-metric">
+                  <div key={n} className="kr-db-engagement-metric">
                     <span className="kr-db-skel kr-db-skel--sm" />
                     <span className="kr-db-skel kr-db-skel--lg" style={{ marginTop: "0.5rem" }} />
+                    <span className="kr-db-skel kr-db-skel--sm" style={{ marginTop: "0.3rem" }} />
                   </div>
                 ))}
               </div>
             ) : engagementSummary ? (
               <>
-                <div className="kr-db-analytics-grid">
+                <div className="kr-db-engagement-grid">
                   {engagementCards.map((metric) => (
-                    <div className="kr-db-analytics-metric" key={metric.label}>
-                      <span className="kr-db-analytics-metric-label">{metric.label}</span>
-                      <span className="kr-db-analytics-metric-value">{metric.value.toLocaleString("en-KE")}</span>
-                      <span className="kr-db-stat-sub">{metric.helper}</span>
+                    <div className={`kr-db-engagement-metric kr-db-engagement-metric--${metric.color}`} key={metric.label}>
+                      <span className={`kr-db-engagement-icon kr-db-engagement-icon--${metric.color}`}>{metric.icon}</span>
+                      <span className="kr-db-engagement-value">{metric.value.toLocaleString("en-KE")}</span>
+                      <span className="kr-db-engagement-label">{metric.label}</span>
+                      <span className="kr-db-engagement-helper">{metric.helper}</span>
                     </div>
                   ))}
                 </div>
-                <div className="mt-3">
-                  <p className="kr-db-panel-title" style={{ marginBottom: "0.5rem" }}>Top-performing listings</p>
-                  {topEngagementListings.length ? (
-                    <div className="kr-db-actions-grid">
+                {topEngagementListings.length > 0 && (
+                  <div className="kr-db-top-listings">
+                    <p className="kr-db-top-listings-title">Top performing listings</p>
+                    <div className="kr-db-top-listings-list">
                       {topEngagementListings.map((item) => (
                         <button
                           type="button"
                           key={item.propertyId}
-                          className="kr-db-action-tile kr-db-action-tile--blue"
+                          className="kr-db-top-listing-row"
                           onClick={() => navigate("/listings")}
                         >
-                          <span className="kr-db-action-body">
-                            <span className="kr-db-action-title">{item.title || `Listing #${item.propertyId}`}</span>
-                            <span className="kr-db-action-sub">
-                              {Number(item.views || 0)} views · {Number(item.interestedShortlist || 0)} shortlist · {Number(item.interestedInquiry || 0)} inquiry interest · {Number(item.reachedOut || 0)} reached out
-                            </span>
+                          <span className="kr-db-top-listing-name">{item.title || `Listing #${item.propertyId}`}</span>
+                          <span className="kr-db-top-listing-stats">
+                            <span className="kr-db-top-stat"><IcoEye />{Number(item.views || 0)}</span>
+                            <span className="kr-db-top-stat"><IcoBookmark />{Number(item.interestedShortlist || 0)}</span>
+                            <span className="kr-db-top-stat"><IcoChatBubble />{Number(item.interestedInquiry || 0)}</span>
+                            <span className="kr-db-top-stat"><IcoPhone />{Number(item.reachedOut || 0)}</span>
                           </span>
                           <span className="kr-db-action-arrow"><IcoArrow /></span>
                         </button>
                       ))}
                     </div>
-                  ) : (
-                    <p className="kr-db-analytics-empty">Your listing engagement metrics will appear after visitors interact with your properties.</p>
-                  )}
-                </div>
+                  </div>
+                )}
+                {topEngagementListings.length === 0 && (
+                  <p className="kr-db-analytics-empty" style={{ marginTop: "0.75rem" }}>Engagement metrics will appear once visitors interact with your listings.</p>
+                )}
               </>
             ) : (
               <p className="kr-db-analytics-empty">Listing engagement metrics are currently unavailable.</p>

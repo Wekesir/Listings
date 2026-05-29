@@ -52,6 +52,12 @@ export async function markConversationAsRead(conversationId) {
   });
 }
 
+export async function getMyUnreadMessageCount() {
+  return apiRequest("/api/messages/conversations/unread-count", {
+    method: "GET"
+  });
+}
+
 export async function getAdminConversations(filters = {}) {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {

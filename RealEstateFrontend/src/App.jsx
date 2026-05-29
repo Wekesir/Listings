@@ -17,14 +17,14 @@ import AdminUserAccessPage from "./pages/AdminUserAccessPage";
 import AdminPricingPage from "./pages/AdminPricingPage";
 import AdminListingReportsPage from "./pages/AdminListingReportsPage";
 import MessagesPage from "./pages/MessagesPage";
-import AdminMessagesPage from "./pages/AdminMessagesPage";
 import ListerFinancesPage from "./pages/ListerFinancesPage";
 import AdminFinancesPage from "./pages/AdminFinancesPage";
 import { getStoredTheme, getStoredUser } from "./utils/session";
 import SessionTimeoutManager from "./components/SessionTimeoutManager";
 import CookieNotice from "./components/CookieNotice";
+import { ACCESS_ACTIONS, MODULE_KEYS, canAccessModule } from "./utils/accessControl";
 
-function ProtectedRoute({ children, allowedRoles }) {
+function ProtectedRoute({ children, allowedRoles, requiredModule = null, requiredAction = ACCESS_ACTIONS.VIEW }) {
   const user = getStoredUser();
 
   if (!user) {
@@ -32,11 +32,44 @@ function ProtectedRoute({ children, allowedRoles }) {
   }
 
   if (Array.isArray(allowedRoles) && allowedRoles.length > 0 && !allowedRoles.includes(user.accountType)) {
-    const fallback = ["lister", "admin"].includes(user.accountType) ? "/dashboard" : "/listings";
+    const fallback = ["lister", "admin"].includes(user.accountType)
+      ? "/dashboard"
+      : user.accountType === "employee"
+        ? "/settings"
+        : "/listings";
+    return <Navigate to={fallback} replace />;
+  }
+
+  if (requiredModule && !canAccessModule(user, requiredModule, requiredAction)) {
+    const fallback = ["lister", "admin"].includes(user.accountType)
+      ? "/dashboard"
+      : user.accountType === "employee"
+        ? "/settings"
+        : "/listings";
     return <Navigate to={fallback} replace />;
   }
 
   return children;
+}
+
+function MessagesEntryRoute() {
+  const user = getStoredUser();
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+  const canViewConversationOversight = canAccessModule(
+    user,
+    MODULE_KEYS.ADMIN_MESSAGES,
+    ACCESS_ACTIONS.VIEW
+  );
+  if (canViewConversationOversight) {
+    return <MessagesPage forceOversightMode />;
+  }
+  if (["viewer", "lister"].includes(user.accountType)) {
+    return <MessagesPage />;
+  }
+  const fallback = user.accountType === "employee" ? "/settings" : "/dashboard";
+  return <Navigate to={fallback} replace />;
 }
 
 function App() {
@@ -98,15 +131,17 @@ function App() {
         <Route
           path="/messages"
           element={(
-            <ProtectedRoute allowedRoles={["viewer", "lister", "admin"]}>
-              <MessagesPage />
+            <ProtectedRoute allowedRoles={["viewer", "lister", "admin", "employee"]}>
+              <MessagesEntryRoute />
             </ProtectedRoute>
           )}
         />
+        {/* Legacy alias for stale bookmarks; canonical path is /messages */}
+        <Route path="/admin/messages" element={<Navigate to="/messages" replace />} />
         <Route
           path="/settings"
           element={(
-            <ProtectedRoute allowedRoles={["viewer", "lister", "admin"]}>
+            <ProtectedRoute allowedRoles={["viewer", "lister", "admin", "employee"]}>
               <SettingsPage />
             </ProtectedRoute>
           )}
@@ -114,23 +149,23 @@ function App() {
         <Route
           path="/admin/finances"
           element={(
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute
+              allowedRoles={["admin", "employee"]}
+              requiredModule={MODULE_KEYS.ADMIN_FINANCES}
+              requiredAction={ACCESS_ACTIONS.VIEW}
+            >
               <AdminFinancesPage />
-            </ProtectedRoute>
-          )}
-        />
-        <Route
-          path="/admin/messages"
-          element={(
-            <ProtectedRoute allowedRoles={["admin"]}>
-              <AdminMessagesPage />
             </ProtectedRoute>
           )}
         />
         <Route
           path="/admin/user-access"
           element={(
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute
+              allowedRoles={["admin", "employee"]}
+              requiredModule={MODULE_KEYS.USER_ACCESS}
+              requiredAction={ACCESS_ACTIONS.VIEW}
+            >
               <AdminUserAccessPage />
             </ProtectedRoute>
           )}
@@ -138,7 +173,11 @@ function App() {
         <Route
           path="/admin/audit-logs"
           element={(
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute
+              allowedRoles={["admin", "employee"]}
+              requiredModule={MODULE_KEYS.AUDIT_LOGS}
+              requiredAction={ACCESS_ACTIONS.VIEW}
+            >
               <AdminAuditLogsPage />
             </ProtectedRoute>
           )}
@@ -146,7 +185,11 @@ function App() {
         <Route
           path="/admin/pricing"
           element={(
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute
+              allowedRoles={["admin", "employee"]}
+              requiredModule={MODULE_KEYS.PRICING}
+              requiredAction={ACCESS_ACTIONS.VIEW}
+            >
               <AdminPricingPage />
             </ProtectedRoute>
           )}
@@ -154,7 +197,11 @@ function App() {
         <Route
           path="/admin/listing-reports"
           element={(
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute
+              allowedRoles={["admin", "employee"]}
+              requiredModule={MODULE_KEYS.LISTING_REPORTS}
+              requiredAction={ACCESS_ACTIONS.VIEW}
+            >
               <AdminListingReportsPage />
             </ProtectedRoute>
           )}

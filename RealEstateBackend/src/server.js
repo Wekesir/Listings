@@ -9,6 +9,7 @@ const {
   syncPropertiesTable
 } = require("./config/db");
 const { initRealtime } = require("./realtime/socket");
+const { startSponsorshipExpiryCron } = require("./jobs/sponsorshipExpiryJob");
 
 const PORT = process.env.PORT || 5000;
 
@@ -21,6 +22,7 @@ async function startServer() {
 
     const server = http.createServer(app);
     initRealtime(server, app.sessionMiddleware);
+    startSponsorshipExpiryCron();
     server.listen(PORT, () => {
       console.log(`Backend API running on port ${PORT}`);
     });

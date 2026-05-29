@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PortalLayout from "../components/PortalLayout";
+import LocationPickerModal from "../components/LocationPickerModal";
 import {
   createProperty,
   createListingPaymentCheckout,
@@ -26,6 +27,11 @@ import { getCountryLocations, resolveUserCountryCode } from "../utils/locationCa
 
 const BASIC_INCLUDED_IMAGE_LIMIT = 2;
 const PAID_MAX_IMAGE_LIMIT = 12;
+
+function IcoEyeSm() { return <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>; }
+function IcoBookmarkSm() { return <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>; }
+function IcoChatSm() { return <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>; }
+function IcoPhoneSm() { return <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.61 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>; }
 const LISTING_STATUS = {
   DRAFT: "draft",
   PUBLISHED: "published"
@@ -45,6 +51,13 @@ function formatPrice(price, type) {
 function getNumericPrice(price) {
   const value = Number(price);
   return Number.isFinite(value) ? value : null;
+}
+
+function buildGoogleMapsLocationUrl(latitude, longitude) {
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "";
+  return `https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}`;
 }
 
 function getPopularityScore(item) {
@@ -239,6 +252,7 @@ function ListingsPage() {
   const [publishWithPremium, setPublishWithPremium] = useState(false);
   const [editImageFiles, setEditImageFiles] = useState([]);
   const [editVideoFile, setEditVideoFile] = useState(null);
+  const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [locationFilter, setLocationFilter] = useState("all");
@@ -255,6 +269,8 @@ function ListingsPage() {
   const [formState, setFormState] = useState({
     title: "",
     location: "",
+    latitude: null,
+    longitude: null,
     type: "rent",
     price: "",
     description: ""
@@ -436,7 +452,30 @@ function ListingsPage() {
 
   const handleInputChange = (event) => {
     const { name, value } = event.target;
-    setFormState((prev) => ({ ...prev, [name]: value }));
+    setFormState((prev) => {
+      if (name === "location") {
+        return {
+          ...prev,
+          location: value,
+          latitude: null,
+          longitude: null
+        };
+      }
+      return { ...prev, [name]: value };
+    });
+  };
+
+  const handleOpenLocationPicker = () => {
+    setIsLocationPickerOpen(true);
+  };
+
+  const handleApplyMapLocation = ({ location, latitude, longitude }) => {
+    setFormState((prev) => ({
+      ...prev,
+      location: String(location || "").trim(),
+      latitude: Number.isFinite(Number(latitude)) ? Number(latitude) : null,
+      longitude: Number.isFinite(Number(longitude)) ? Number(longitude) : null
+    }));
   };
 
   const handleCreateImageFileChange = (event) => {
@@ -490,6 +529,8 @@ function ListingsPage() {
       payload.append("ownerId", String(currentUser.id));
       payload.append("title", formState.title);
       payload.append("location", formState.location);
+      payload.append("latitude", Number.isFinite(Number(formState.latitude)) ? String(Number(formState.latitude)) : "");
+      payload.append("longitude", Number.isFinite(Number(formState.longitude)) ? String(Number(formState.longitude)) : "");
       payload.append("type", formState.type);
       payload.append("price", String(Number(formState.price)));
       payload.append("description", formState.description);
@@ -514,6 +555,8 @@ function ListingsPage() {
       setFormState({
         title: "",
         location: "",
+        latitude: null,
+        longitude: null,
         type: "rent",
         price: "",
         description: ""
@@ -622,6 +665,8 @@ function ListingsPage() {
     setFormState({
       title: listing.title || "",
       location: listing.location || "",
+      latitude: Number.isFinite(Number(listing.latitude)) ? Number(listing.latitude) : null,
+      longitude: Number.isFinite(Number(listing.longitude)) ? Number(listing.longitude) : null,
       type: listing.type || "rent",
       price: String(listing.price || ""),
       description: listing.description || ""
@@ -653,6 +698,8 @@ function ListingsPage() {
       const payload = new FormData();
       payload.append("title", formState.title);
       payload.append("location", formState.location);
+      payload.append("latitude", Number.isFinite(Number(formState.latitude)) ? String(Number(formState.latitude)) : "");
+      payload.append("longitude", Number.isFinite(Number(formState.longitude)) ? String(Number(formState.longitude)) : "");
       payload.append("type", formState.type);
       payload.append("price", String(Number(formState.price)));
       payload.append("description", formState.description);
@@ -1097,15 +1144,47 @@ function ListingsPage() {
               </div>
               <div className="col-md-6">
                 <label className="kr-form-label" htmlFor="listingComposerLocation">Location</label>
-                <input
-                  id="listingComposerLocation"
-                  name="location"
-                  className="kr-form-input"
-                  value={formState.location}
-                  onChange={handleInputChange}
-                  placeholder="e.g. Kilimani, Nairobi"
-                  required
-                />
+                <div className="kr-location-input-row">
+                  <input
+                    id="listingComposerLocation"
+                    name="location"
+                    className="kr-form-input"
+                    value={formState.location}
+                    onChange={handleInputChange}
+                    placeholder="e.g. Kilimani, Nairobi"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="kr-location-map-btn"
+                    onClick={handleOpenLocationPicker}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
+                    </svg>
+                    Pin on map
+                  </button>
+                </div>
+                {Number.isFinite(Number(formState.latitude)) && Number.isFinite(Number(formState.longitude)) && (
+                  <div className="kr-location-coords-row">
+                    <span className="kr-location-coords-badge" aria-hidden="true">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/>
+                      </svg>
+                    </span>
+                    <p className="kr-location-coords-note">
+                      {Number(formState.latitude).toFixed(6)}, {Number(formState.longitude).toFixed(6)}
+                    </p>
+                    <a
+                      className="kr-location-coords-link"
+                      href={buildGoogleMapsLocationUrl(formState.latitude, formState.longitude)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open in Maps ↗
+                    </a>
+                  </div>
+                )}
               </div>
               <div className="col-md-4">
                 <label className="kr-form-label" htmlFor="listingComposerType">Listing type</label>
@@ -1871,18 +1950,26 @@ function ListingsPage() {
 
                     {isLister && isOwnedByCurrentUser && (
                       <>
-                      <div className="kr-listing-engagement-row">
-                        <span className="kr-listing-engagement-pill">
-                          Views {engagement.views.toLocaleString("en-KE")}
+                      <div className="kr-listing-engagement-grid">
+                        <span className="kr-listing-engagement-cell kr-listing-engagement-cell--blue">
+                          <span className="kr-listing-engagement-cell-icon"><IcoEyeSm /></span>
+                          <span className="kr-listing-engagement-cell-value">{engagement.views.toLocaleString("en-KE")}</span>
+                          <span className="kr-listing-engagement-cell-label">Views</span>
                         </span>
-                        <span className="kr-listing-engagement-pill">
-                          Shortlist interest {engagement.interestedShortlist.toLocaleString("en-KE")}
+                        <span className="kr-listing-engagement-cell kr-listing-engagement-cell--purple">
+                          <span className="kr-listing-engagement-cell-icon"><IcoBookmarkSm /></span>
+                          <span className="kr-listing-engagement-cell-value">{engagement.interestedShortlist.toLocaleString("en-KE")}</span>
+                          <span className="kr-listing-engagement-cell-label">Saved</span>
                         </span>
-                        <span className="kr-listing-engagement-pill">
-                          Inquiry interest {engagement.interestedInquiry.toLocaleString("en-KE")}
+                        <span className="kr-listing-engagement-cell kr-listing-engagement-cell--amber">
+                          <span className="kr-listing-engagement-cell-icon"><IcoChatSm /></span>
+                          <span className="kr-listing-engagement-cell-value">{engagement.interestedInquiry.toLocaleString("en-KE")}</span>
+                          <span className="kr-listing-engagement-cell-label">Inquiries</span>
                         </span>
-                        <span className="kr-listing-engagement-pill">
-                          Reached out {engagement.reachedOut.toLocaleString("en-KE")}
+                        <span className="kr-listing-engagement-cell kr-listing-engagement-cell--green">
+                          <span className="kr-listing-engagement-cell-icon"><IcoPhoneSm /></span>
+                          <span className="kr-listing-engagement-cell-value">{engagement.reachedOut.toLocaleString("en-KE")}</span>
+                          <span className="kr-listing-engagement-cell-label">Contacts</span>
                         </span>
                       </div>
                       <div className="kr-listing-payment-row">
@@ -2067,6 +2154,16 @@ function ListingsPage() {
         </div>
       )}
 
+      <LocationPickerModal
+        isOpen={isLocationPickerOpen}
+        title={editingListing ? "Choose listing location on map" : "Choose property location on map"}
+        initialLocationText={formState.location}
+        initialLatitude={formState.latitude}
+        initialLongitude={formState.longitude}
+        onApply={handleApplyMapLocation}
+        onClose={() => setIsLocationPickerOpen(false)}
+      />
+
       {editingListing && (
         <div
           className="kr-portal-filter-modal-overlay"
@@ -2103,14 +2200,46 @@ function ListingsPage() {
               </div>
               <div className="kr-uac-modal-field">
                 <label className="kr-settings-field-label" htmlFor="listingEditLocation">Location</label>
-                <input
-                  id="listingEditLocation"
-                  name="location"
-                  className="kr-form-input"
-                  value={formState.location}
-                  onChange={handleInputChange}
-                  required
-                />
+                <div className="kr-location-input-row">
+                  <input
+                    id="listingEditLocation"
+                    name="location"
+                    className="kr-form-input"
+                    value={formState.location}
+                    onChange={handleInputChange}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="kr-location-map-btn"
+                    onClick={handleOpenLocationPicker}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
+                    </svg>
+                    Pin on map
+                  </button>
+                </div>
+                {Number.isFinite(Number(formState.latitude)) && Number.isFinite(Number(formState.longitude)) && (
+                  <div className="kr-location-coords-row">
+                    <span className="kr-location-coords-badge" aria-hidden="true">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/>
+                      </svg>
+                    </span>
+                    <p className="kr-location-coords-note">
+                      {Number(formState.latitude).toFixed(6)}, {Number(formState.longitude).toFixed(6)}
+                    </p>
+                    <a
+                      className="kr-location-coords-link"
+                      href={buildGoogleMapsLocationUrl(formState.latitude, formState.longitude)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open in Maps ↗
+                    </a>
+                  </div>
+                )}
               </div>
               <div className="kr-uac-modal-field-row">
                 <div className="kr-uac-modal-field">
