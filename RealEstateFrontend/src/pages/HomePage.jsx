@@ -1,13 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { getProperties, submitInquiry } from "../services/propertyService";
-import { logoutAccount } from "../services/authService";
 import { useShortlist } from "../hooks/useShortlist";
-import {
-  clearStoredSessionMeta,
-  clearStoredUser,
-  getStoredUser
-} from "../utils/session";
 import { notify } from "../utils/notify";
 import {
   getFallbackImage,
@@ -127,7 +121,6 @@ const HERO_SHOWCASE_FALLBACK = [
 function HomePage() {
   const navigate = useNavigate();
   const [properties, setProperties] = useState([]);
-  const [loggedInUser, setLoggedInUser] = useState(() => getStoredUser());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [scrolled, setScrolled] = useState(false);
@@ -142,14 +135,6 @@ function HomePage() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", "light");
-  }, []);
-
-  useEffect(() => {
-    const handleStorageChange = () => {
-      setLoggedInUser(getStoredUser());
-    };
-    window.addEventListener("storage", handleStorageChange);
-    return () => window.removeEventListener("storage", handleStorageChange);
   }, []);
 
   useEffect(() => {
@@ -316,17 +301,6 @@ function HomePage() {
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await logoutAccount({ reason: "manual" });
-    } catch (_error) {
-      // Session might already be invalid or expired.
-    }
-    clearStoredUser();
-    clearStoredSessionMeta();
-    setLoggedInUser(null);
-  };
-
   const statItems = [
     { end: 200, suffix: "+", label: "Verified Properties", icon: "🏠", tone: "blue" },
     { end: 8500, suffix: "+", label: "Monthly Inquiries", icon: "💬", tone: "green" },
@@ -368,14 +342,10 @@ function HomePage() {
 
           {/* Desktop CTA */}
           <div className="d-none d-lg-flex gap-2 align-items-center kr-nav-cta-group">
-            {loggedInUser ? (
-              <button type="button" className="kr-logout-btn" onClick={handleLogout}>Logout</button>
-            ) : (
-              <>
-                <a href="/login" className="kr-nav-login-btn">Login</a>
-                <a href="/register" className="kr-nav-signup-btn">Sign Up Free</a>
-              </>
-            )}
+            <>
+              <a href="/login" className="kr-nav-login-btn">Login</a>
+              <a href="/register" className="kr-nav-signup-btn">Sign Up Free</a>
+            </>
           </div>
 
           {/* Mobile actions */}
@@ -450,21 +420,10 @@ function HomePage() {
         </nav>
 
         <div className="kr-nav-drawer-footer">
-          {loggedInUser ? (
-            <button
-              type="button"
-              className="kr-logout-btn"
-              style={{ width: "100%", textAlign: "center" }}
-              onClick={() => { handleLogout(); setNavOpen(false); }}
-            >
-              Logout
-            </button>
-          ) : (
-            <>
-              <a href="/login" className="kr-nav-login-btn" style={{ textAlign: "center" }}>Login</a>
-              <a href="/register" className="kr-nav-signup-btn" style={{ textAlign: "center" }}>Sign Up Free</a>
-            </>
-          )}
+          <>
+            <a href="/login" className="kr-nav-login-btn" style={{ textAlign: "center" }}>Login</a>
+            <a href="/register" className="kr-nav-signup-btn" style={{ textAlign: "center" }}>Sign Up Free</a>
+          </>
         </div>
       </div>
 

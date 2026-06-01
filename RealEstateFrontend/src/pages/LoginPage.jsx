@@ -1,7 +1,13 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getActiveSession, loginAccount } from "../services/authService";
-import { setStoredSessionMeta, setStoredUser } from "../utils/session";
+import {
+  clearStoredSessionMeta,
+  clearStoredUser,
+  getStoredUser,
+  setStoredSessionMeta,
+  setStoredUser
+} from "../utils/session";
 import { notify } from "../utils/notify";
 
 function LoginPage() {
@@ -13,6 +19,18 @@ function LoginPage() {
   const [showSessionExpiredNotice, setShowSessionExpiredNotice] = useState(false);
   const [showAccountRestrictedNotice, setShowAccountRestrictedNotice] = useState(false);
   const [showVerifiedNotice, setShowVerifiedNotice] = useState(false);
+  const [isCheckingExistingSession, setIsCheckingExistingSession] = useState(false);
+
+  const getPostLoginPath = useCallback((user) => {
+    const params = new URLSearchParams(location.search);
+    const requestedReturnTo = params.get("returnTo");
+    const safeReturnTo =
+      requestedReturnTo && requestedReturnTo.startsWith("/") && !requestedReturnTo.startsWith("//")
+        ? requestedReturnTo
+        : null;
+
+    return safeReturnTo || (["lister", "admin"].includes(user?.accountType) ? "/dashboard" : "/listings");
+  }, [location.search]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -38,10 +56,13 @@ function LoginPage() {
             timeoutMs: Number(response?.session?.timeoutMs),
             lastActivityAt: Date.now()
           });
+          if (response.user?.onboardingPending) {
+            notify("Complete your account setup to continue.", "info");
+            navigate("/complete-signup", { replace: true });
+            return;
+          }
           notify("Signed in successfully with social account.", "success");
-          const fallbackPath =
-            ["lister", "admin"].includes(response.user?.accountType) ? "/dashboard" : "/listings";
-          navigate(fallbackPath, { replace: true });
+          navigate(getPostLoginPath(response.user), { replace: true });
         })
         .catch(() => {
           notify("Social login did not complete. Please try again.", "warning");
@@ -63,7 +84,50 @@ function LoginPage() {
       },
       { replace: true }
     );
-  }, [location.pathname, location.search, navigate]);
+  }, [getPostLoginPath, location.pathname, location.search, navigate]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const sessionExpired = params.get("sessionExpired") === "1";
+    const accountRestricted = params.get("accountRestricted") === "1";
+    const oauthSuccess = params.get("oauthSuccess") === "1";
+    const cachedUser = getStoredUser();
+
+    if (sessionExpired || accountRestricted || oauthSuccess || !cachedUser) {
+      return;
+    }
+
+    let cancelled = false;
+    setIsCheckingExistingSession(true);
+
+    getActiveSession()
+      .then((response) => {
+        if (cancelled) return;
+        setStoredUser(response.user);
+        setStoredSessionMeta({
+          timeoutMs: Number(response?.session?.timeoutMs),
+          lastActivityAt: Date.now()
+        });
+        const redirectPath = response.user?.onboardingPending
+          ? "/complete-signup"
+          : getPostLoginPath(response.user);
+        navigate(redirectPath, { replace: true });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        clearStoredUser();
+        clearStoredSessionMeta();
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsCheckingExistingSession(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [getPostLoginPath, location.search, navigate]);
 
   const handleInputChange = (event) => {
     const { name, value } = event.target;
@@ -81,17 +145,14 @@ function LoginPage() {
         timeoutMs: Number(response?.session?.timeoutMs),
         lastActivityAt: Date.now()
       });
+      if (response.user?.onboardingPending) {
+        notify("Complete your account setup to continue.", "info");
+        navigate("/complete-signup", { replace: true });
+        return;
+      }
       notify(`Welcome back, ${response.user.fullName}!`, "success");
       setFormState({ email: "", password: "" });
-      const params = new URLSearchParams(location.search);
-      const requestedReturnTo = params.get("returnTo");
-      const safeReturnTo =
-        requestedReturnTo && requestedReturnTo.startsWith("/") && !requestedReturnTo.startsWith("//")
-          ? requestedReturnTo
-          : null;
-      const redirectPath =
-        safeReturnTo ||
-        (["lister", "admin"].includes(response.user?.accountType) ? "/dashboard" : "/listings");
+      const redirectPath = getPostLoginPath(response.user);
       setTimeout(() => navigate(redirectPath, { replace: true }), 600);
     } catch (submitError) {
       if (submitError?.message?.toLowerCase().includes("verify your email")) {
@@ -169,6 +230,12 @@ function LoginPage() {
           </div>
 
           <div className="kr-auth-form-scroll">
+            {isCheckingExistingSession ? (
+              <div className="d-flex align-items-center gap-2 text-muted mb-3">
+                <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                Checking existing session...
+              </div>
+            ) : null}
             <Link to="/" className="kr-auth-back-link d-none d-lg-inline-flex">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M19 12H5M12 19l-7-7 7-7"/>
