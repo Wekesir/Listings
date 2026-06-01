@@ -9,6 +9,7 @@ const analyticsRoutes = require("./routes/analyticsRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const messageRoutes = require("./routes/messageRoutes");
 const financeRoutes = require("./routes/financeRoutes");
+const requireOnboardingComplete = require("./middleware/requireOnboardingComplete");
 
 const app = express();
 const SESSION_IDLE_TIMEOUT_MS = Number(process.env.SESSION_IDLE_TIMEOUT_MS || 30 * 60 * 1000);
@@ -37,6 +38,7 @@ app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }
 app.use(express.json());
 app.use(sessionMiddleware);
 app.use(passport.initialize());
+app.use(requireOnboardingComplete);
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 app.get("/api/health", (_req, res) => {

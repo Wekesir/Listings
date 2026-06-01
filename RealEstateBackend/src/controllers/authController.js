@@ -35,6 +35,7 @@ function normalizeCountryCode(value, fallback = "KE") {
 }
 
 function buildSessionUser(user) {
+  const onboardingCompleted = Boolean(user.onboarding_completed ?? user.onboardingCompleted ?? true);
   return {
     id: user.id,
     fullName: user.full_name || user.fullName,
@@ -44,6 +45,8 @@ function buildSessionUser(user) {
     subscriptionTier: user.subscription_tier || user.subscriptionTier || "standard",
     authProvider: user.auth_provider || user.authProvider || "local",
     emailVerified: Boolean(user.email_verified ?? user.emailVerified ?? true),
+    onboardingCompleted,
+    onboardingPending: !onboardingCompleted,
     createdAt: user.created_at || user.createdAt,
     isBanned: Boolean(user.is_banned || user.isBanned),
     suspendedUntil: user.suspended_until || user.suspendedUntil || null
@@ -284,6 +287,7 @@ async function getUserByIdWithRestrictions(userId) {
         account_type,
         subscription_tier,
         auth_provider,
+        onboarding_completed,
         email_verified,
         created_at,
         is_banned,
@@ -508,6 +512,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
         subscription_tier,
         auth_provider,
         provider_subject,
+        onboarding_completed,
         email_verified,
         created_at,
         is_banned,
@@ -536,6 +541,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
         subscription_tier,
         auth_provider,
         provider_subject,
+        onboarding_completed,
         email_verified,
         created_at,
         is_banned,
@@ -578,6 +584,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
           subscription_tier,
           auth_provider,
           provider_subject,
+          onboarding_completed,
           email_verified,
           created_at,
           is_banned,
@@ -607,9 +614,10 @@ async function createOrLinkOAuthUser(oauthProfile) {
         subscription_tier,
         auth_provider,
         provider_subject,
+        onboarding_completed,
         email_verified
       )
-      VALUES (?, ?, ?, ?, 'viewer', 'standard', ?, ?, ?)
+      VALUES (?, ?, ?, ?, 'viewer', 'standard', ?, ?, 0, ?)
     `,
     [fullName, email, placeholderPassword, normalizedCountryCode, provider, providerSubject, emailVerifiedFromProvider ? 1 : 0]
   );
@@ -624,6 +632,7 @@ async function createOrLinkOAuthUser(oauthProfile) {
         subscription_tier,
         auth_provider,
         provider_subject,
+        onboarding_completed,
         email_verified,
         created_at,
         is_banned,
@@ -740,6 +749,8 @@ const registerUser = async (req, res) => {
         subscriptionTier: normalizedTier,
         authProvider: "local",
         emailVerified: false,
+        onboardingCompleted: true,
+        onboardingPending: false,
         createdAt: new Date().toISOString()
       }
     });
@@ -883,6 +894,7 @@ const loginUser = async (req, res) => {
           account_type,
           subscription_tier,
           auth_provider,
+          onboarding_completed,
           email_verified,
           created_at,
           is_banned,
@@ -1059,6 +1071,112 @@ const resendVerificationCode = async (req, res) => {
   }
 };
 
+const completeOAuthSignup = async (req, res) => {
+  const sessionUser = req.session?.user;
+  if (!sessionUser) {
+    return res.status(401).json({
+      message: "Session expired. Please log in again."
+    });
+  }
+  if (!sessionUser.onboardingPending) {
+    return res.status(400).json({
+      message: "Account setup is already complete."
+    });
+  }
+
+  const accountType = String(req.body?.accountType || "").trim().toLowerCase();
+  const submittedTier = String(req.body?.subscriptionTier || "standard").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  const countryCode = normalizeCountryCode(req.body?.countryCode, "KE");
+
+  if (!publicRegistrationAccountTypes.has(accountType)) {
+    return res.status(400).json({
+      message: "Account type must be one of 'lister' or 'viewer'."
+    });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({
+      message: "Password must be at least 6 characters."
+    });
+  }
+
+  const subscriptionTier = accountType === "lister" ? submittedTier : "standard";
+  if (!allowedSubscriptionTiers.has(subscriptionTier)) {
+    return res.status(400).json({
+      message: "Subscription tier must be either 'standard' or 'premium'."
+    });
+  }
+
+  try {
+    const targetUser = await getUserByIdWithRestrictions(sessionUser.id);
+    if (!targetUser) {
+      req.session.destroy(() => {});
+      return res.status(401).json({
+        message: "Session expired. Please log in again."
+      });
+    }
+
+    const restrictionState = getRestrictionState(targetUser);
+    const restrictionMessage = getRestrictionMessage(restrictionState);
+    if (restrictionMessage) {
+      req.session.destroy(() => {});
+      return res.status(403).json({
+        message: restrictionMessage
+      });
+    }
+
+    if (!["google", "apple"].includes(String(targetUser.auth_provider || "").toLowerCase())) {
+      return res.status(400).json({
+        message: "Only social accounts can complete this setup flow."
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    await pool.execute(
+      `
+        UPDATE users
+        SET
+          password = ?,
+          country_code = ?,
+          account_type = ?,
+          subscription_tier = ?,
+          onboarding_completed = 1
+        WHERE id = ?
+      `,
+      [hashedPassword, countryCode, accountType, subscriptionTier, targetUser.id]
+    );
+
+    const updatedUser = await getUserByIdWithRestrictions(targetUser.id);
+    const refreshedSessionUser = await buildSessionUserWithAccess(updatedUser);
+    req.session.user = refreshedSessionUser;
+    await createAuditLog({
+      req,
+      user: refreshedSessionUser,
+      email: refreshedSessionUser.email,
+      eventType: "oauth_onboarding_completed",
+      eventReason: "social_user_completed_required_signup",
+      sessionId: req.sessionID || null,
+      statusCode: 200,
+      details: {
+        accountType,
+        subscriptionTier
+      }
+    });
+
+    return res.status(200).json({
+      message: "Account setup completed successfully.",
+      user: refreshedSessionUser,
+      session: {
+        timeoutMs: SESSION_IDLE_TIMEOUT_MS
+      }
+    });
+  } catch (_error) {
+    return res.status(500).json({
+      message: "Failed to complete account setup."
+    });
+  }
+};
+
 const handleOAuthCallback = async (req, res) => {
   const providerProfile = req.user;
   try {
@@ -1120,6 +1238,18 @@ const handleOAuthCallback = async (req, res) => {
 
     const sessionUser = await buildSessionUserWithAccess(resolvedUser);
     req.session.user = sessionUser;
+    if (sessionUser.onboardingPending) {
+      await createAuditLog({
+        req,
+        user: sessionUser,
+        email: sessionUser.email,
+        eventType: "oauth_signup_pending_profile_completion",
+        eventReason: "required_onboarding_fields_missing",
+        sessionId: req.sessionID || null,
+        statusCode: 200
+      });
+      return res.redirect(buildFrontendRedirect("/complete-signup"));
+    }
     await createAuditLog({
       req,
       user: sessionUser,
@@ -2835,6 +2965,7 @@ module.exports = {
   loginUser,
   verifyEmailCode,
   resendVerificationCode,
+  completeOAuthSignup,
   handleOAuthCallback,
   handleOAuthFailureRedirect,
   updateProfile,

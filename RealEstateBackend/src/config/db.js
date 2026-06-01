@@ -92,6 +92,7 @@ async function initializeDatabase() {
       subscription_tier ENUM('standard', 'premium') NOT NULL DEFAULT 'standard',
       auth_provider ENUM('local', 'google', 'apple') NOT NULL DEFAULT 'local',
       provider_subject VARCHAR(255) NULL,
+      onboarding_completed TINYINT(1) NOT NULL DEFAULT 1,
       email_verified TINYINT(1) NOT NULL DEFAULT 0,
       email_verification_code_hash VARCHAR(255) NULL,
       email_verification_expires_at DATETIME NULL,
@@ -286,6 +287,26 @@ async function initializeDatabase() {
       ADD COLUMN email_verified TINYINT(1) NOT NULL DEFAULT 1 AFTER provider_subject
     `);
   }
+
+  const [onboardingCompletedColumnRows] = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'users'
+      AND COLUMN_NAME = 'onboarding_completed'
+  `);
+  if (Number(onboardingCompletedColumnRows?.[0]?.count || 0) === 0) {
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN onboarding_completed TINYINT(1) NOT NULL DEFAULT 1 AFTER provider_subject
+    `);
+  }
+
+  await pool.query(`
+    UPDATE users
+    SET onboarding_completed = 1
+    WHERE onboarding_completed IS NULL
+  `);
 
   const [verificationCodeHashColumnRows] = await pool.query(`
     SELECT COUNT(*) AS count
@@ -1146,9 +1167,10 @@ async function initializeDatabase() {
               account_type,
               subscription_tier,
               auth_provider,
+              onboarding_completed,
               email_verified
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'local', 1)
+            VALUES (?, ?, ?, ?, ?, ?, 'local', 1, 1)
           `,
           [
             SEEDED_ADMIN.fullName,
@@ -1187,9 +1209,10 @@ async function initializeDatabase() {
               account_type,
               subscription_tier,
               auth_provider,
+              onboarding_completed,
               email_verified
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'local', 1)
+            VALUES (?, ?, ?, ?, ?, ?, 'local', 1, 1)
           `,
           [
             SEEDED_DEMO_LISTER.fullName,

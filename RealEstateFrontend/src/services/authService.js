@@ -41,6 +41,16 @@ export async function resendVerificationCode(payload) {
   });
 }
 
+export async function completeOAuthSignup(payload) {
+  return apiRequest("/api/auth/complete-oauth-signup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+}
+
 export function getSocialAuthStartUrl(provider) {
   const normalizedProvider = String(provider || "").trim().toLowerCase();
   if (!["google", "apple"].includes(normalizedProvider)) {

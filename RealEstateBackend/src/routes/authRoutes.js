@@ -6,6 +6,7 @@ const {
   loginUser,
   verifyEmailCode,
   resendVerificationCode,
+  completeOAuthSignup,
   handleOAuthCallback,
   handleOAuthFailureRedirect,
   updateProfile,
@@ -61,6 +62,7 @@ router.post("/register", registerUser);
 router.post("/login", loginUser);
 router.post("/verify-email-code", verifyEmailCode);
 router.post("/resend-verification-code", resendVerificationCode);
+router.post("/complete-oauth-signup", completeOAuthSignup);
 router.post("/logout", logoutUser);
 router.get("/session", getSessionUser);
 router.get("/audit-logs", requireModulePermission(MODULE_KEYS.AUDIT_LOGS, ACCESS_ACTIONS.VIEW), getAuthAuditLogs);

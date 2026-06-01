@@ -6,6 +6,7 @@ import HomePage from "./pages/HomePage";
 import RegisterPage from "./pages/RegisterPage";
 import LoginPage from "./pages/LoginPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
+import CompleteSignupPage from "./pages/CompleteSignupPage";
 import ListingsPage from "./pages/ListingsPage";
 import BrowseListingsPage from "./pages/BrowseListingsPage";
 import ShortlistPage from "./pages/ShortlistPage";
@@ -29,6 +30,10 @@ function ProtectedRoute({ children, allowedRoles, requiredModule = null, require
 
   if (!user) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (user.onboardingPending) {
+    return <Navigate to="/complete-signup" replace />;
   }
 
   if (Array.isArray(allowedRoles) && allowedRoles.length > 0 && !allowedRoles.includes(user.accountType)) {
@@ -95,6 +100,7 @@ function App() {
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/verify-email" element={<VerifyEmailPage />} />
+        <Route path="/complete-signup" element={<CompleteSignupPage />} />
         <Route
           path="/listings"
           element={(
