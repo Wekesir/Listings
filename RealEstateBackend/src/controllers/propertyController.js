@@ -1035,7 +1035,7 @@ const createProperty = async (req, res) => {
     });
   }
 
-  if (Boolean(owner.is_banned)) {
+  if (owner.is_banned) {
     return res.status(403).json({
       message: "Your account has been permanently banned. Listing creation is blocked."
     });

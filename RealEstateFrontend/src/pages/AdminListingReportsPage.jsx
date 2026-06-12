@@ -402,6 +402,7 @@ function AdminListingReportsPage() {
   }, [statusFilter, reasonFilter, searchQuery, pageSize]);
 
   const load = useCallback(async () => {
+    void refreshNonce;
     setLoading(true);
     try {
       const res = await getListingReports({

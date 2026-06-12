@@ -67,7 +67,7 @@ async function issueVerificationCodeForEmail(email, options = {}) {
   if (!user) {
     return { ok: false, status: 404, message: "Account not found." };
   }
-  if (Boolean(user.email_verified)) {
+  if (user.email_verified) {
     return { ok: false, status: 409, message: "Email is already verified." };
   }
 
@@ -128,7 +128,7 @@ async function verifyCodeForEmail(email, code) {
   if (!user) {
     return { ok: false, status: 404, message: "Account not found." };
   }
-  if (Boolean(user.email_verified)) {
+  if (user.email_verified) {
     return { ok: true, status: 200, message: "Email is already verified." };
   }
 

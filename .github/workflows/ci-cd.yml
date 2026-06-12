@@ -1,0 +1,117 @@
+# CI/CD pipeline for RealEstate.
+#
+# Flow: push to main -> lint + quality checks -> Docker build -> Docker Hub push
+# Docker build/push never runs unless every quality-check (including lint) passes.
+
+name: CI/CD
+
+# Trigger only when new commits land on main.
+# Pull requests and pushes to other branches do not run this workflow.
+on:
+  push:
+    branches:
+      - main
+
+# Cancel an in-progress run if a newer commit is pushed to main.
+concurrency:
+  group: ci-cd-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Gate job: must pass before any Docker work begins.
+  # Runs frontend and backend checks in parallel via a matrix.
+  quality-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - app: frontend
+            working-directory: RealEstateFrontend
+            # Verifies the production bundle compiles after lint passes.
+            command: npm run build
+          - app: backend
+            working-directory: RealEstateBackend
+            # Runs unit tests after lint passes.
+            command: npm test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.working-directory }}/package-lock.json
+
+      # Install exact dependency versions from package-lock.json.
+      - name: Install dependencies
+        working-directory: ${{ matrix.working-directory }}
+        run: npm ci
+
+      # ESLint must pass before build/test runs for this app.
+      # If lint fails, this job fails and build-and-push is skipped.
+      - name: Lint ${{ matrix.app }}
+        working-directory: ${{ matrix.working-directory }}
+        run: npm run lint
+
+      - name: Run ${{ matrix.app }} checks
+        working-directory: ${{ matrix.working-directory }}
+        run: ${{ matrix.command }}
+
+  # Runs only after quality-checks succeeds (lint + build/test for both apps).
+  # Images are built first; push to Docker Hub happens only after both builds succeed.
+  build-and-push:
+    needs: quality-checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Build backend image locally — no push yet.
+      # Tags: latest and the commit SHA for traceability.
+      - name: Build backend image
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          docker build \
+            -t "${DOCKER_USERNAME}/realestate-backend:${IMAGE_SHA}" \
+            -t "${DOCKER_USERNAME}/realestate-backend:latest" \
+            ./RealEstateBackend
+
+      # Build frontend image locally — no push yet.
+      - name: Build frontend image
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          docker build \
+            -t "${DOCKER_USERNAME}/realestate-frontend:${IMAGE_SHA}" \
+            -t "${DOCKER_USERNAME}/realestate-frontend:latest" \
+            ./RealEstateFrontend
+
+      # Authenticate with Docker Hub using repo secrets.
+      # Required secrets: DOCKER_USERNAME, DOCKER_PAT (read/write token).
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      # Push only runs after both docker build steps above succeed.
+      - name: Push backend image
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: docker push "${DOCKER_USERNAME}/realestate-backend" --all-tags
+
+      - name: Push frontend image
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: docker push "${DOCKER_USERNAME}/realestate-frontend" --all-tags

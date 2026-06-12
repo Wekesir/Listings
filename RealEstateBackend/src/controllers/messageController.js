@@ -93,7 +93,7 @@ async function sendUnreadMessageEmailIfStillUnread({
     );
     const conversation = conversationRows[0];
     if (!conversation) return;
-    if (!conversation.recipientEmail || !Boolean(conversation.recipientEmailVerified)) return;
+    if (!conversation.recipientEmail || !conversation.recipientEmailVerified) return;
 
     const [unreadRows] = await pool.execute(
       `

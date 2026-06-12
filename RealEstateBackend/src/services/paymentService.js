@@ -52,8 +52,6 @@ async function createStripeCheckout({
   if (!PAYMENT_CONFIG.stripe.secretKey) {
     throw new Error("Stripe is not configured");
   }
-  // Lazy import keeps boot lightweight and avoids requiring Stripe when not used.
-  // eslint-disable-next-line global-require
   const Stripe = require("stripe");
   const stripe = new Stripe(PAYMENT_CONFIG.stripe.secretKey);
   const session = await stripe.checkout.sessions.create({

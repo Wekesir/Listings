@@ -342,7 +342,7 @@ function AdminUserAccessPage() {
   const handleToggleRoleActive = async (role) => {
     setIsSavingRole(true);
     try {
-      await updateEmployeeRole(role.id, { roleName: role.roleName, roleDescription: role.roleDescription || "", isActive: !Boolean(role.isActive) });
+      await updateEmployeeRole(role.id, { roleName: role.roleName, roleDescription: role.roleDescription || "", isActive: !role.isActive });
       notify("Employee role updated.", "success");
       await loadUsers();
     } catch (error) { notify(error.message || "Failed to update employee role.", "danger"); }

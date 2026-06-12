@@ -211,8 +211,6 @@ function AdminAuditLogsPage() {
     setFilters((prev) => ({ ...prev, [name]: value }));
   };
 
-  const applyFilters = () => { void loadLogs(1, filters); };
-
   const applyFiltersAndClose = () => {
     void loadLogs(1, filters);
     setIsFilterModalOpen(false);
@@ -251,7 +249,6 @@ function AdminAuditLogsPage() {
       const totalPages = Number(firstPage?.pagination?.totalPages || 1);
       const maxPages = Math.min(totalPages, 20);
       for (let currentPage = 2; currentPage <= maxPages; currentPage += 1) {
-        // eslint-disable-next-line no-await-in-loop
         const nextPageResponse = await getAuthAuditLogs({ ...filters, page: currentPage, limit: 100 });
         const nextRows = Array.isArray(nextPageResponse?.data) ? nextPageResponse.data : [];
         aggregatedRows = aggregatedRows.concat(nextRows);

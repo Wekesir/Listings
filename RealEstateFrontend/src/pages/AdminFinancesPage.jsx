@@ -41,7 +41,7 @@ function providerVariant(provider) {
 }
 
 function countActiveFilters(filters) {
-  const { page, limit, ...rest } = filters;
+  const { page: _page, limit: _limit, ...rest } = filters;
   return Object.values(rest).filter(Boolean).length;
 }
 

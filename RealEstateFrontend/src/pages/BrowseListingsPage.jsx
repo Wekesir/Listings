@@ -21,6 +21,7 @@ import {
 import { setStoredBrowseFilters } from "../utils/recommendationFilters";
 import PropertyMediaBadge from "../components/PropertyMediaBadge";
 import { getCountryLocations, resolveUserCountryCode } from "../utils/locationCatalog";
+import "../styles/browse-revamp.css";
 
 const LISTINGS_PER_PAGE = 9;
 const ALLOWED_TYPES = new Set(["all", "rent", "lease"]);
@@ -120,6 +121,8 @@ function BrowseListingsPage() {
   const [alertPreference, setAlertPreference] = useState(null);
   const [isLoadingAlertPreference, setIsLoadingAlertPreference] = useState(false);
   const [isSavingAlertPreference, setIsSavingAlertPreference] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
 
   const { shortlistedIds, shortlistedLookup, toggleShortlist } = useShortlist();
 
@@ -138,6 +141,22 @@ function BrowseListingsPage() {
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  /* Lock body scroll and close overlays on Escape while one is open */
+  useEffect(() => {
+    const overlayOpen = navOpen || mobileFiltersOpen;
+    document.body.style.overflow = overlayOpen ? "hidden" : "";
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      setNavOpen(false);
+      setMobileFiltersOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = "";
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [navOpen, mobileFiltersOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -289,12 +308,13 @@ function BrowseListingsPage() {
     return scored.slice(0, 3).map((entry) => entry.item);
   }, [properties, location, propertyType]);
 
-  const hasActiveFilters =
-    searchTerm.trim() !== "" ||
-    propertyType !== "all" ||
-    location !== "all" ||
-    maxPrice.trim() !== "" ||
-    sortBy !== "default";
+  const activeFilterCount =
+    (searchTerm.trim() !== "" ? 1 : 0) +
+    (propertyType !== "all" ? 1 : 0) +
+    (location !== "all" ? 1 : 0) +
+    (maxPrice.trim() !== "" ? 1 : 0) +
+    (sortBy !== "default" ? 1 : 0);
+  const hasActiveFilters = activeFilterCount > 0;
 
   const clearFilters = useCallback(() => {
     setSearchTerm("");
@@ -354,6 +374,130 @@ function BrowseListingsPage() {
   const startIndex = sortedProperties.length === 0 ? 0 : (currentPage - 1) * LISTINGS_PER_PAGE + 1;
   const endIndex = Math.min(currentPage * LISTINGS_PER_PAGE, sortedProperties.length);
 
+  /* Filter fields, reused by the desktop row and the mobile modal
+     (prefix keeps input ids unique between the two renders). */
+  const renderFilterFields = (prefix) => (
+    <>
+      <div className="kr-filter-group kr-filter-group-wide">
+        <label className="kr-filter-label" htmlFor={`${prefix}Search`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.35-4.35" />
+          </svg>
+          Search
+        </label>
+        <input
+          id={`${prefix}Search`}
+          type="text"
+          className="kr-filter-input"
+          placeholder="Property name or location…"
+          value={searchTerm}
+          onChange={(e) => {
+            setSearchTerm(e.target.value);
+            setCurrentPage(1);
+          }}
+        />
+      </div>
+
+      <div className="kr-filter-group">
+        <label className="kr-filter-label" htmlFor={`${prefix}Type`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+            <line x1="7" y1="7" x2="7.01" y2="7" />
+          </svg>
+          Type
+        </label>
+        <select
+          id={`${prefix}Type`}
+          className="kr-filter-select"
+          value={propertyType}
+          onChange={(e) => {
+            setPropertyType(e.target.value);
+            setCurrentPage(1);
+          }}
+        >
+          <option value="all">All Types</option>
+          <option value="rent">Rent</option>
+          <option value="lease">Lease</option>
+        </select>
+      </div>
+
+      <div className="kr-filter-group">
+        <label className="kr-filter-label" htmlFor={`${prefix}Location`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+            <circle cx="12" cy="10" r="3" />
+          </svg>
+          Location
+        </label>
+        <select
+          id={`${prefix}Location`}
+          className="kr-filter-select"
+          value={location}
+          onChange={(e) => {
+            setLocation(e.target.value);
+            setCurrentPage(1);
+          }}
+        >
+          <option value="all">All Locations</option>
+          {availableLocations.map((loc) => (
+            <option key={loc} value={loc}>{loc}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="kr-filter-group">
+        <label className="kr-filter-label" htmlFor={`${prefix}MaxPrice`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="1" x2="12" y2="23" />
+            <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+          </svg>
+          Max Price
+        </label>
+        <input
+          id={`${prefix}MaxPrice`}
+          type="number"
+          min="0"
+          className="kr-filter-input"
+          placeholder="KSh — any"
+          value={maxPrice}
+          onChange={(e) => {
+            setMaxPrice(e.target.value);
+            setCurrentPage(1);
+          }}
+        />
+      </div>
+
+      <div className="kr-filter-group">
+        <label className="kr-filter-label" htmlFor={`${prefix}Sort`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="8" y1="6" x2="21" y2="6" />
+            <line x1="8" y1="12" x2="21" y2="12" />
+            <line x1="8" y1="18" x2="21" y2="18" />
+            <line x1="3" y1="6" x2="3.01" y2="6" />
+            <line x1="3" y1="12" x2="3.01" y2="12" />
+            <line x1="3" y1="18" x2="3.01" y2="18" />
+          </svg>
+          Sort
+        </label>
+        <select
+          id={`${prefix}Sort`}
+          className="kr-filter-select"
+          value={sortBy}
+          onChange={(e) => {
+            setSortBy(e.target.value);
+            setCurrentPage(1);
+          }}
+        >
+          <option value="default">Featured first</option>
+          <option value="price-asc">Price: Low → High</option>
+          <option value="price-desc">Price: High → Low</option>
+          <option value="latest">Latest first</option>
+        </select>
+      </div>
+    </>
+  );
+
   const pageNumbers = useMemo(() => {
     const max = totalPages;
     const cur = currentPage;
@@ -365,7 +509,7 @@ function BrowseListingsPage() {
   }, [currentPage, totalPages]);
 
   return (
-    <div className="kr-browse-page">
+    <div className="kr-browse-page kr-browse-page--v2">
       {/* ─────────── Navbar ─────────── */}
       <nav className={`navbar navbar-expand-lg site-navbar sticky-top ${scrolled ? "site-navbar--scrolled" : ""}`}>
         <div className="container py-1">
@@ -379,19 +523,22 @@ function BrowseListingsPage() {
             </span>
             KenReal<span className="brand-dot"></span>Estates
           </Link>
+          {/* Hamburger (mobile only) — opens the left drawer */}
           <button
-            className="navbar-toggler border-0"
+            className={`kr-nav-hamburger d-lg-none ${navOpen ? "kr-nav-hamburger--open" : ""}`}
             type="button"
-            data-bs-toggle="collapse"
-            data-bs-target="#browseNav"
-            aria-controls="browseNav"
-            aria-expanded="false"
-            aria-label="Toggle navigation"
+            onClick={() => setNavOpen((v) => !v)}
+            aria-label={navOpen ? "Close menu" : "Open menu"}
+            aria-expanded={navOpen}
           >
-            <span className="navbar-toggler-icon"></span>
+            <span />
+            <span />
+            <span />
           </button>
-          <div className="collapse navbar-collapse" id="browseNav">
-            <ul className="navbar-nav mx-auto mb-2 mb-lg-0 gap-1">
+
+          {/* Desktop nav */}
+          <div className="d-none d-lg-flex flex-grow-1 align-items-center">
+            <ul className="navbar-nav mx-auto mb-0 gap-1 flex-row">
               <li className="nav-item">
                 <Link className="nav-link kr-nav-link" to="/">Home</Link>
               </li>
@@ -426,6 +573,75 @@ function BrowseListingsPage() {
         </div>
       </nav>
 
+      {/* Mobile backdrop */}
+      <div
+        className={`kr-nav-backdrop ${navOpen ? "kr-nav-backdrop--visible" : ""}`}
+        onClick={() => setNavOpen(false)}
+        aria-hidden="true"
+      />
+
+      {/* Mobile drawer: slides in from the left to mid-screen */}
+      <div
+        className={`kr-nav-drawer kr-bf-nav-drawer ${navOpen ? "kr-nav-drawer--open" : ""}`}
+        aria-hidden={!navOpen}
+        role="dialog"
+        aria-label="Navigation menu"
+      >
+        <div className="kr-nav-drawer-header">
+          <span className="kr-nav-drawer-brand">
+            KenReal<span className="kr-nav-drawer-dot" />Estates
+          </span>
+          <button className="kr-nav-drawer-close" onClick={() => setNavOpen(false)} aria-label="Close menu">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        <nav className="kr-nav-drawer-nav">
+          <Link className="kr-nav-drawer-link" to="/" onClick={() => setNavOpen(false)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg>
+            Home
+          </Link>
+          <div className="kr-nav-drawer-divider" />
+          <Link className="kr-nav-drawer-link active" to="/browse" onClick={() => setNavOpen(false)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
+            Listings
+          </Link>
+          <div className="kr-nav-drawer-divider" />
+          <Link className="kr-nav-drawer-link" to="/#why-us" onClick={() => setNavOpen(false)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+            Why KenReal
+          </Link>
+          <div className="kr-nav-drawer-divider" />
+          <Link className="kr-nav-drawer-link" to="/#shortlist" onClick={() => setNavOpen(false)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>
+            My Shortlist
+            {shortlistedIds.length > 0 && (
+              <span className="kr-nav-badge">{shortlistedIds.length}</span>
+            )}
+          </Link>
+        </nav>
+
+        <div className="kr-nav-drawer-footer">
+          {loggedInUser ? (
+            <button
+              type="button"
+              className="kr-logout-btn"
+              style={{ width: "100%" }}
+              onClick={() => { setNavOpen(false); handleLogout(); }}
+            >
+              Logout
+            </button>
+          ) : (
+            <>
+              <Link to="/login" className="kr-nav-login-btn" style={{ textAlign: "center" }} onClick={() => setNavOpen(false)}>Login</Link>
+              <Link to="/register" className="kr-nav-signup-btn" style={{ textAlign: "center" }} onClick={() => setNavOpen(false)}>Sign Up Free</Link>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* ─────────── Browse hero ─────────── */}
       <header className="kr-browse-hero">
         <div className="kr-browse-hero-bg" aria-hidden="true"></div>
@@ -456,125 +672,31 @@ function BrowseListingsPage() {
       <section className="kr-browse-section">
         <div className="container">
           <div className="kr-filter-card kr-browse-filter-card">
+            <button
+              type="button"
+              className="kr-bf-filter-toggle"
+              onClick={() => setMobileFiltersOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={mobileFiltersOpen}
+            >
+              <span className="d-inline-flex align-items-center gap-2">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                </svg>
+                Filters &amp; sorting
+                {activeFilterCount > 0 && (
+                  <span className="kr-bf-filter-toggle-count">{activeFilterCount}</span>
+                )}
+              </span>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" />
+                <line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" />
+                <line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" />
+              </svg>
+            </button>
             <div className="kr-filter-row kr-browse-filter-row">
-              <div className="kr-filter-group kr-filter-group-wide">
-                <label className="kr-filter-label" htmlFor="browseSearch">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="11" cy="11" r="8" />
-                    <path d="m21 21-4.35-4.35" />
-                  </svg>
-                  Search
-                </label>
-                <input
-                  id="browseSearch"
-                  type="text"
-                  className="kr-filter-input"
-                  placeholder="Property name or location…"
-                  value={searchTerm}
-                  onChange={(e) => {
-                    setSearchTerm(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                />
-              </div>
-
-              <div className="kr-filter-group">
-                <label className="kr-filter-label" htmlFor="browseType">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
-                    <line x1="7" y1="7" x2="7.01" y2="7" />
-                  </svg>
-                  Type
-                </label>
-                <select
-                  id="browseType"
-                  className="kr-filter-select"
-                  value={propertyType}
-                  onChange={(e) => {
-                    setPropertyType(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                >
-                  <option value="all">All Types</option>
-                  <option value="rent">Rent</option>
-                  <option value="lease">Lease</option>
-                </select>
-              </div>
-
-              <div className="kr-filter-group">
-                <label className="kr-filter-label" htmlFor="browseLocation">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-                    <circle cx="12" cy="10" r="3" />
-                  </svg>
-                  Location
-                </label>
-                <select
-                  id="browseLocation"
-                  className="kr-filter-select"
-                  value={location}
-                  onChange={(e) => {
-                    setLocation(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                >
-                  <option value="all">All Locations</option>
-                  {availableLocations.map((loc) => (
-                    <option key={loc} value={loc}>{loc}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="kr-filter-group">
-                <label className="kr-filter-label" htmlFor="browseMaxPrice">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="1" x2="12" y2="23" />
-                    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-                  </svg>
-                  Max Price
-                </label>
-                <input
-                  id="browseMaxPrice"
-                  type="number"
-                  min="0"
-                  className="kr-filter-input"
-                  placeholder="KSh — any"
-                  value={maxPrice}
-                  onChange={(e) => {
-                    setMaxPrice(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                />
-              </div>
-
-              <div className="kr-filter-group">
-                <label className="kr-filter-label" htmlFor="browseSort">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="8" y1="6" x2="21" y2="6" />
-                    <line x1="8" y1="12" x2="21" y2="12" />
-                    <line x1="8" y1="18" x2="21" y2="18" />
-                    <line x1="3" y1="6" x2="3.01" y2="6" />
-                    <line x1="3" y1="12" x2="3.01" y2="12" />
-                    <line x1="3" y1="18" x2="3.01" y2="18" />
-                  </svg>
-                  Sort
-                </label>
-                <select
-                  id="browseSort"
-                  className="kr-filter-select"
-                  value={sortBy}
-                  onChange={(e) => {
-                    setSortBy(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                >
-                  <option value="default">Featured first</option>
-                  <option value="price-asc">Price: Low → High</option>
-                  <option value="price-desc">Price: High → Low</option>
-                  <option value="latest">Latest first</option>
-                </select>
-              </div>
-
+              {renderFilterFields("browse")}
               <div className="kr-filter-group kr-filter-reset">
                 <button type="button" className="kr-reset-btn" onClick={clearFilters}>
                   Reset
@@ -608,11 +730,90 @@ function BrowseListingsPage() {
             )}
           </div>
 
-          {loading && (
-            <div className="kr-loading-state">
-              <div className="kr-loading-spinner"></div>
-              <p>Fetching listings…</p>
+          {/* Mobile filters modal (bottom sheet) */}
+          {mobileFiltersOpen && (
+            <div
+              className="kr-bf-filter-modal-backdrop"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setMobileFiltersOpen(false);
+              }}
+            >
+              <div
+                className="kr-bf-filter-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Filters and sorting"
+              >
+                <div className="kr-bf-filter-modal-grip" aria-hidden="true" />
+                <div className="kr-bf-filter-modal-head">
+                  <h2 className="kr-bf-filter-modal-title">
+                    Filters &amp; sorting
+                    {activeFilterCount > 0 && (
+                      <span className="kr-bf-filter-toggle-count">{activeFilterCount}</span>
+                    )}
+                  </h2>
+                  <button
+                    type="button"
+                    className="kr-bf-filter-modal-close"
+                    onClick={() => setMobileFiltersOpen(false)}
+                    aria-label="Close filters"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="kr-bf-filter-modal-body">
+                  {renderFilterFields("bfModal")}
+                </div>
+                <div className="kr-bf-filter-modal-footer">
+                  <button
+                    type="button"
+                    className="kr-reset-btn"
+                    onClick={clearFilters}
+                    disabled={!hasActiveFilters}
+                  >
+                    Reset all
+                  </button>
+                  <button
+                    type="button"
+                    className="kr-bf-filter-modal-apply"
+                    onClick={() => setMobileFiltersOpen(false)}
+                  >
+                    Show {sortedProperties.length} result{sortedProperties.length === 1 ? "" : "s"}
+                  </button>
+                </div>
+              </div>
             </div>
+          )}
+
+          {loading && (
+            <>
+              <div className="row g-4" aria-hidden="true">
+                {Array.from({ length: 6 }, (_, i) => (
+                  <div className="col-6 col-lg-4" key={`skeleton-${i}`}>
+                    <div className="kr-bf-skeleton-card" style={{ "--i": i }}>
+                      <div className="kr-bf-skeleton-media kr-bf-shimmer" />
+                      <div className="kr-bf-skeleton-body">
+                        <div className="kr-bf-skeleton-line kr-bf-shimmer" style={{ width: "72%" }} />
+                        <div className="kr-bf-skeleton-line kr-bf-shimmer" style={{ width: "48%" }} />
+                        <div className="kr-bf-skeleton-pricebar kr-bf-shimmer" />
+                        <div className="kr-bf-skeleton-actions">
+                          <div className="kr-bf-skeleton-btn kr-bf-shimmer" />
+                          <div className="kr-bf-skeleton-btn kr-bf-shimmer" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="kr-bf-loading-note" role="status">
+                <span className="kr-bf-loading-note-dot" />
+                <span className="kr-bf-loading-note-dot" />
+                <span className="kr-bf-loading-note-dot" />
+                Fetching listings…
+              </p>
+            </>
           )}
 
           {!loading && error && (
@@ -676,12 +877,12 @@ function BrowseListingsPage() {
                       </div>
 
                       <div className="row g-4">
-                        {suggestedWhenEmpty.map((item) => {
+                        {suggestedWhenEmpty.map((item, cardIndex) => {
                           const features = getPropertyFeatures(item.id);
                           const promoted = isPaidListing(item);
                           const saved = shortlistedLookup.has(item.id);
                           return (
-                            <div className="col-md-6 col-lg-4" key={`suggest-${item.id}`}>
+                            <div className="col-6 col-lg-4 kr-bf-card-col" style={{ "--i": cardIndex }} key={`suggest-${item.id}`}>
                               <div className={`kr-property-card kr-similar-card ${promoted ? "kr-property-card--promoted" : ""}`}>
                                 <div
                                   className={`kr-card-image kr-card-image-${item.type} ${
@@ -751,12 +952,12 @@ function BrowseListingsPage() {
                 </>
               ) : (
                 <div className="row g-4">
-                  {paginatedProperties.map((item) => {
+                  {paginatedProperties.map((item, cardIndex) => {
                     const features = getPropertyFeatures(item.id);
                     const promoted = isPaidListing(item);
                     const saved = shortlistedLookup.has(item.id);
                     return (
-                      <div className="col-md-6 col-lg-4" key={item.id}>
+                      <div className="col-6 col-lg-4 kr-bf-card-col" style={{ "--i": cardIndex }} key={item.id}>
                         <div className={`kr-property-card ${promoted ? "kr-property-card--promoted" : ""}`}>
                           <div
                             className={`kr-card-image kr-card-image-${item.type} ${

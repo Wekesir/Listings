@@ -15,6 +15,7 @@ import PropertyMediaBadge from "../components/PropertyMediaBadge";
 import { createListingInquiry } from "../services/messageService";
 import { getStoredBrowseFilters } from "../utils/recommendationFilters";
 import { getStoredUser } from "../utils/session";
+import "../styles/detail-revamp.css";
 
 /* ── Helpers ── */
 function formatPrice(price, type) {
@@ -927,7 +928,7 @@ function PropertyDetailPage() {
 
   if (loading) {
     return (
-      <PortalLayout title="Loading…" subtitle="Fetching property details.">
+      <PortalLayout title="Loading…" subtitle="Fetching property details." hideGuestAuthButtons>
         <div className="kr-portal-state">
           <span className="kr-portal-state-spinner"></span>
           <span>Loading property…</span>
@@ -1108,7 +1109,7 @@ function PropertyDetailPage() {
   };
 
   return (
-    <PortalLayout title={property.title} subtitle={property.location}>
+    <PortalLayout title={property.title} subtitle={property.location} hideGuestAuthButtons>
       {/* Back breadcrumb */}
       <button
         type="button"
@@ -1125,7 +1126,12 @@ function PropertyDetailPage() {
         <MediaViewer
           media={stageMedia}
           selectedIndex={clampedMediaIndex}
-          onSelect={setSelectedImageIndex}
+          onSelect={(index) => {
+            // Reset the error flag so one broken image doesn't force the
+            // fallback graphic onto every other photo as the user navigates.
+            setImgError(false);
+            setSelectedImageIndex(index);
+          }}
           title={property.title}
           isCustomImage={customImage}
           onImgError={() => setImgError(true)}

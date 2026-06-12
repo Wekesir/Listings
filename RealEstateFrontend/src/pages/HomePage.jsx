@@ -9,6 +9,7 @@ import {
   resolvePropertyImageUrl
 } from "../utils/propertyMedia";
 import PropertyMediaBadge from "../components/PropertyMediaBadge";
+import "../styles/home-revamp.css";
 
 /* ── CountUpVal: animates a number from 0 → end when it scrolls into view ── */
 function CountUpVal({ end, suffix = "", prefix = "", duration = 1800 }) {
@@ -131,16 +132,25 @@ function HomePage() {
   const [inquirySubmitting, setInquirySubmitting] = useState(false);
   const [heroSearch, setHeroSearch] = useState("");
   const [heroType, setHeroType] = useState("all");
-  const { shortlistedIds, shortlistedLookup, toggleShortlist } = useShortlist();
+  const { shortlistedLookup, toggleShortlist } = useShortlist();
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", "light");
   }, []);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 20);
+    const doc = document.documentElement;
+    const onScroll = () => {
+      setScrolled(window.scrollY > 20);
+      const max = doc.scrollHeight - window.innerHeight;
+      doc.style.setProperty("--kr-scroll", max > 0 ? String(window.scrollY / max) : "0");
+    };
+    onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      doc.style.removeProperty("--kr-scroll");
+    };
   }, []);
 
   /* Lock body scroll and close drawer on Escape while it is open */
@@ -309,7 +319,10 @@ function HomePage() {
   ];
 
   return (
-    <div className="kr-home">
+    <div className="kr-home kr-home--v2">
+      {/* Scroll progress indicator */}
+      <div className="kr-v2-progress" aria-hidden="true" />
+
       {/* ─────────── Navbar ─────────── */}
       <nav className={`site-navbar site-navbar--home sticky-top ${scrolled ? "site-navbar--scrolled" : ""}`}>
         <div className="kr-nav-glow-strip" aria-hidden="true" />
@@ -450,9 +463,21 @@ function HomePage() {
                 Trusted Since 2015 · Nairobi, Kenya
               </span>
               <h1 className="kr-hero-title">
-                Find your perfect<br />
-                <span className="kr-hero-title-accent">rental or lease</span><br />
-                with confidence.
+                {"Find your perfect".split(" ").map((word, i) => (
+                  <span key={word} className="kr-title-word" style={{ "--d": `${i * 90}ms` }}>
+                    {word}&nbsp;
+                  </span>
+                ))}
+                <br />
+                <span className="kr-hero-title-accent kr-title-word" style={{ "--d": "300ms" }}>
+                  rental or lease
+                </span>
+                <br />
+                {"with confidence.".split(" ").map((word, i) => (
+                  <span key={word} className="kr-title-word" style={{ "--d": `${420 + i * 90}ms` }}>
+                    {word}&nbsp;
+                  </span>
+                ))}
               </h1>
               <p className="kr-hero-sub">
                 KenReal Estates connects property owners and tenants through a
@@ -609,6 +634,18 @@ function HomePage() {
               </div>
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* ─────────── Locations marquee ─────────── */}
+      <div className="kr-v2-marquee" aria-hidden="true">
+        <div className="kr-v2-marquee-track">
+          {[...NAIROBI_AREAS, ...NAIROBI_AREAS].map((area, i) => (
+            <span className="kr-v2-marquee-item" key={`${area}-${i}`}>
+              <span className="kr-v2-marquee-dot" />
+              {area}
+            </span>
+          ))}
         </div>
       </div>
 
@@ -1335,6 +1372,19 @@ function HomePage() {
           </div>
         </div>
       </div>
+
+      {/* ─────────── Back to top ─────────── */}
+      <button
+        type="button"
+        className={`kr-v2-top-btn ${scrolled ? "kr-v2-top-btn--visible" : ""}`}
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        aria-label="Back to top"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <line x1="12" y1="19" x2="12" y2="5" />
+          <polyline points="5 12 12 5 19 12" />
+        </svg>
+      </button>
 
       {/* ─────────── Footer ─────────── */}
       <footer className="kr-footer">

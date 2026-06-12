@@ -161,7 +161,7 @@ const NAV_ITEMS = [
   }
 ];
 
-function PortalLayout({ title, subtitle, children }) {
+function PortalLayout({ title, subtitle, children, hideGuestAuthButtons = false }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [user, setUser] = useState(() => getStoredUser());
@@ -369,14 +369,16 @@ function PortalLayout({ title, subtitle, children }) {
                 <h1 className="kr-portal-title">{title}</h1>
                 {subtitle && <p className="kr-portal-subtitle">{subtitle}</p>}
               </div>
-              <div className="kr-portal-header-meta">
-                <NavLink to="/login" className="kr-guest-header-btn kr-guest-header-btn--outline">
-                  Log in
-                </NavLink>
-                <NavLink to="/register" className="kr-guest-header-btn kr-guest-header-btn--solid">
-                  Sign up free
-                </NavLink>
-              </div>
+              {!hideGuestAuthButtons && (
+                <div className="kr-portal-header-meta">
+                  <NavLink to="/login" className="kr-guest-header-btn kr-guest-header-btn--outline">
+                    Log in
+                  </NavLink>
+                  <NavLink to="/register" className="kr-guest-header-btn kr-guest-header-btn--solid">
+                    Sign up free
+                  </NavLink>
+                </div>
+              )}
             </div>
           </header>
 

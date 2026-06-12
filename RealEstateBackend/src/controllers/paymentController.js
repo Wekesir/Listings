@@ -7,7 +7,6 @@ async function handleStripeWebhook(req, res) {
 
   try {
     if (PAYMENT_CONFIG.stripe.secretKey && PAYMENT_CONFIG.stripe.webhookSecret && signature) {
-      // eslint-disable-next-line global-require
       const Stripe = require("stripe");
       const stripe = new Stripe(PAYMENT_CONFIG.stripe.secretKey);
       event = stripe.webhooks.constructEvent(req.body, signature, PAYMENT_CONFIG.stripe.webhookSecret);

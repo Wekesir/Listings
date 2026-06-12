@@ -754,7 +754,7 @@ const registerUser = async (req, res) => {
         createdAt: new Date().toISOString()
       }
     });
-  } catch (error) {
+  } catch (_error) {
     return res.status(500).json({
       message: "Failed to create account"
     });
@@ -953,7 +953,7 @@ const loginUser = async (req, res) => {
       });
     }
 
-    if (!Boolean(user.email_verified)) {
+    if (!user.email_verified) {
       await createAuditLog({
         req,
         email: normalizedEmail,
@@ -1011,7 +1011,7 @@ const loginUser = async (req, res) => {
         timeoutMs: SESSION_IDLE_TIMEOUT_MS
       }
     });
-  } catch (error) {
+  } catch (_error) {
     return res.status(500).json({
       message: "Failed to log in"
     });
@@ -1217,7 +1217,7 @@ const handleOAuthCallback = async (req, res) => {
       );
     }
 
-    if (!Boolean(resolvedUser.email_verified)) {
+    if (!resolvedUser.email_verified) {
       await issueVerificationCodeForEmail(resolvedUser.email);
       await createAuditLog({
         req,
@@ -1810,7 +1810,7 @@ const getManageableUsers = async (req, res) => {
         };
       })
     });
-  } catch (error) {
+  } catch (_error) {
     return res.status(500).json({
       message: "Failed to fetch users"
     });
@@ -1897,7 +1897,7 @@ const suspendUserAccount = async (req, res) => {
     return res.status(200).json({
       message: `User suspended until ${suspendedUntilDate.toLocaleString("en-KE")}`
     });
-  } catch (error) {
+  } catch (_error) {
     return res.status(500).json({
       message: "Failed to suspend user"
     });
@@ -1967,7 +1967,7 @@ const banUserAccount = async (req, res) => {
     return res.status(200).json({
       message: "User has been permanently banned"
     });
-  } catch (error) {
+  } catch (_error) {
     return res.status(500).json({
       message: "Failed to ban user"
     });
@@ -2029,7 +2029,7 @@ const clearUserRestrictions = async (req, res) => {
     return res.status(200).json({
       message: "User restrictions have been removed"
     });
-  } catch (error) {
+  } catch (_error) {
     return res.status(500).json({
       message: "Failed to update user restrictions"
     });

@@ -369,7 +369,6 @@ const getAdminListingReports = async (req, res) => {
   const limitRaw = Number(req.query?.limit);
   const page  = Number.isFinite(pageRaw)  && pageRaw  > 0 ? Math.floor(pageRaw)  : 1;
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 100) : 20;
-  const offset = (page - 1) * limit;
 
   const conditions = [];
   const params = [];

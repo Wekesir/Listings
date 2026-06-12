@@ -14,6 +14,7 @@ import {
   getPropertyAlertPreference,
   updatePropertyAlertPreference
 } from "../services/propertyService";
+import { getRealtimeSocket } from "../services/realtimeSocket";
 import { notify } from "../utils/notify";
 import { useShortlist } from "../hooks/useShortlist";
 import {
@@ -241,6 +242,7 @@ function ListingsPage() {
   const [recentListingId, setRecentListingId] = useState(null);
   const [paymentByListingId, setPaymentByListingId] = useState({});
   const [engagementByListingId, setEngagementByListingId] = useState({});
+  const [engagementRefreshNonce, setEngagementRefreshNonce] = useState(0);
   const [paymentModalListing, setPaymentModalListing] = useState(null);
   const [selectedProvider, setSelectedProvider] = useState("mpesa");
   const [selectedDurationMonths, setSelectedDurationMonths] = useState(1);
@@ -417,7 +419,24 @@ function ListingsPage() {
     return () => {
       active = false;
     };
-  }, [isLister, myProperties.length]);
+  }, [isLister, myProperties.length, engagementRefreshNonce]);
+
+  useEffect(() => {
+    if (!isLister) return undefined;
+    const socket = getRealtimeSocket();
+    let refreshTimeout = null;
+    const handleMetricsUpdated = () => {
+      if (refreshTimeout) clearTimeout(refreshTimeout);
+      refreshTimeout = setTimeout(() => {
+        setEngagementRefreshNonce((prev) => prev + 1);
+      }, 280);
+    };
+    socket.on("listings:metrics-updated", handleMetricsUpdated);
+    return () => {
+      socket.off("listings:metrics-updated", handleMetricsUpdated);
+      if (refreshTimeout) clearTimeout(refreshTimeout);
+    };
+  }, [isLister]);
 
   useEffect(() => {
     if (!currentUser?.id) {
