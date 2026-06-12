@@ -1,20 +1,20 @@
 # CI/CD pipeline for RealEstate.
 #
-# Flow: push to main -> lint + quality checks -> Docker build -> Docker Hub push
+# Flow: push to master -> lint + quality checks -> Docker build -> Docker Hub push
 # Docker build/push never runs unless every quality-check (including lint) passes.
 
 name: CI/CD
 
-# Trigger only when new commits land on main.
+# Trigger only when new commits land on master (this repo's default branch).
 # Pull requests and pushes to other branches do not run this workflow.
 on:
   push:
     branches:
-      - main
+      - master
 
-# Cancel an in-progress run if a newer commit is pushed to main.
+# Cancel an in-progress run if a newer commit is pushed to master.
 concurrency:
-  group: ci-cd-main
+  group: ci-cd-master
   cancel-in-progress: true
 
 permissions:
