@@ -40,12 +40,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
+      # Node 22 is required: the backend test script uses glob patterns with
+      # `node --test`, which Node only supports from v21 onwards.
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: ${{ matrix.working-directory }}/package-lock.json
 
@@ -72,7 +74,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Build backend image locally — no push yet.
       # Tags: latest and the commit SHA for traceability.
